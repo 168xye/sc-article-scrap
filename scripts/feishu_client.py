@@ -80,8 +80,15 @@ class FeishuClient:
             if data.get("code") != 0:
                 raise RuntimeError(f"读取多维表格失败: {data}")
 
-            items = data.get("data", {}).get("items", [])
+            items = data.get("data", {}).get("items") or []
+            if not isinstance(items, list):
+                raise RuntimeError(
+                    f"读取多维表格失败: items 不是列表，实际为 {type(items).__name__}"
+                )
+
             for item in items:
+                if not isinstance(item, dict):
+                    continue
                 link_field = item.get("fields", {}).get("链接")
                 if isinstance(link_field, dict):
                     link_val = link_field.get("link", "")

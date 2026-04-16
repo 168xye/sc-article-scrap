@@ -273,6 +273,13 @@ class McKinseyScraper:
                     f"    curl_cffi {attempt_idx + 1}/{attempts} 失败: {short_err}",
                 )
 
+                if "403" in short_err or "HTTP Error 403" in short_err:
+                    _emit(
+                        "PROGRESS",
+                        "    检测到 403，跳过剩余 curl_cffi 重试，直接切 Playwright",
+                    )
+                    break
+
         # ── 兜底：Playwright ──
         if not success:
             if not PLAYWRIGHT_FALLBACK_ENABLED:

@@ -56,9 +56,9 @@ REQUEST_DELAY_SECONDS = 60
 ARTICLE_FETCH_TIMEOUT_CONNECT = 10
 ARTICLE_FETCH_TIMEOUT_READ = 180
 
-# 指数退避序列（秒）。列表长度 = 重试次数。首次失败后等 10s，第二次 30s…
-# 若设为 [] 则不重试。
-ARTICLE_FETCH_BACKOFF_SCHEDULE = [10, 30, 90, 180]
+# 403/抓取失败后的退避序列（秒）。列表长度 = 重试次数。
+# 这里故意保持很短，失败后尽快切到 Playwright，避免单篇文章卡太久。
+ARTICLE_FETCH_BACKOFF_SCHEDULE = [5]
 
 # curl_cffi 的浏览器指纹。常用: chrome120 / chrome124 / chrome131
 # 换一个指纹有时能绕开具体的反爬规则
