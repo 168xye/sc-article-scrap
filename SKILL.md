@@ -22,13 +22,18 @@ metadata:
 
 支持的参数：
 - `--topic ai|automotive|design|all` — 主题筛选（默认 all）
-- `--limit N` — 每个主题最多新增 N 篇（默认 5，已存在的不计入）
+- `--limit N` — 每个主题候选新增上限（默认 5，已存在的不计入）
+- `--daily-total-limit N` — 全局每日新增上限（跨主题聚合后取最新，默认 3）
 - `--no-content` — 仅存摘要，不抓取正文（更快）
+- `--require-full-content` — 必须抓到全文才入库（默认开启）
+- `--allow-summary-fallback` — 抓不到全文时允许摘要兜底入库
+- `--auth-auto-refresh` / `--no-auth-auto-refresh` — 是否自动刷新登录态（默认开启）
 - `--keywords kw1 kw2 ...` — 自定义搜索关键词（覆盖预设主题）
 
 示例：
-- `/sc-article-scrap` → 全部主题，每主题新增 5 篇
+- `/sc-article-scrap` → 全部主题，跨主题全局最多新增 3 篇（默认）
 - `/sc-article-scrap --topic ai --limit 3` → 仅 AI 主题，新增 3 篇
+- `/sc-article-scrap --topic all --daily-total-limit 3 --require-full-content` → 每日模式（推荐）
 - `/sc-article-scrap --keywords "EV battery" "autonomous driving"` → 自定义关键词
 
 ## 重要：实时进度展示
@@ -121,6 +126,19 @@ python3 -u main.py $ARGUMENTS
 ```
 
 **注意 `-u` 参数：** 强制 Python 不缓冲输出，确保进度行实时可见。
+
+默认推荐每日低频稳定模式：
+
+```bash
+cd {baseDir}/scripts
+python3 -u main.py --topic all --daily-total-limit 3 --require-full-content --auth-auto-refresh
+```
+
+说明：
+- 自动检查并保活登录态（48 小时内将过期会触发刷新）
+- 每天跨主题最多入库 3 篇最新新文章
+- 正文未通过“全文判定”时不入库，避免“只抓一页”伪成功
+- 若遇验证码/人工验证，脚本会提示你在浏览器完成一次验证后继续
 
 脚本运行期间，持续读取输出并向用户实时展示进度（见上方「进度展示」要求）。
 

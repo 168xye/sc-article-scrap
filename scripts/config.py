@@ -60,9 +60,9 @@ ARTICLE_FETCH_TIMEOUT_READ = 180
 # 这里故意保持很短，失败后尽快切到 Playwright，避免单篇文章卡太久。
 ARTICLE_FETCH_BACKOFF_SCHEDULE = [5]
 
-# curl_cffi 的浏览器指纹。常用: chrome120 / chrome124 / chrome131
-# 换一个指纹有时能绕开具体的反爬规则
-ARTICLE_FETCH_IMPERSONATE = "chrome124"
+# curl_cffi 浏览器指纹池（按尝试轮换）。
+# 常用: chrome120 / chrome124 / chrome131
+ARTICLE_FETCH_IMPERSONATE_POOL = ["chrome124", "chrome131"]
 
 # ── Playwright 兜底 ───────────────────────────────────────
 # 当 curl_cffi 全部重试失败、或 curl_cffi 响应疑似被登录墙/付费墙拦截时，
@@ -130,6 +130,21 @@ CONTINUE_READING_SELECTORS = [
 
 # 每个 Playwright 页面最多连续点 N 次（防多段分页）
 PLAYWRIGHT_MAX_CONTINUE_CLICKS = 3
+
+# ── 全文判定 / 分页 ──────────────────────────────────────
+# 抽取段落少于该值时，视为正文不完整。
+FULLTEXT_MIN_PARAGRAPHS = 6
+# 连续 N 轮内容无增长，判定页面已经稳定。
+CONTENT_STABLE_ROUNDS = 2
+# 分页抓取的最大页数（含首页）。
+PAGINATION_MAX_PAGES = 3
+
+# ── 认证保活 ──────────────────────────────────────────────
+# 登录态剩余有效期小于该阈值（小时）时自动触发刷新。
+AUTH_REFRESH_THRESHOLD_HOURS = 12
+
+# ── 运行状态 ──────────────────────────────────────────────
+RUN_STATE_PATH = os.path.join(os.path.dirname(__file__), "run_state.json")
 
 
 def validate_config() -> list[str]:
