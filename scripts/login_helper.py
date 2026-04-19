@@ -16,7 +16,7 @@
 """
 
 import sys
-from typing import Callable
+from typing import Callable, Optional
 
 from config import (
     MCKINSEY_BASE,
@@ -28,7 +28,11 @@ from config import (
 )
 
 
-def _say(emit: Callable[[str, str], None] | None, tag: str, msg: str) -> None:
+def _say(
+    emit: Optional[Callable[[str, str], None]],
+    tag: str,
+    msg: str,
+) -> None:
     if emit:
         emit(tag, msg)
     else:
@@ -37,7 +41,7 @@ def _say(emit: Callable[[str, str], None] | None, tag: str, msg: str) -> None:
 
 def save_login_state_interactive(
     *,
-    emit: Callable[[str, str], None] | None = None,
+    emit: Optional[Callable[[str, str], None]] = None,
     prompt: bool = True,
 ) -> bool:
     try:

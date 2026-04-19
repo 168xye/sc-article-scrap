@@ -27,7 +27,7 @@ metadata:
 - `--no-content` — 仅存摘要，不抓取正文（更快）
 - `--require-full-content` — 必须抓到全文才入库（默认开启）
 - `--allow-summary-fallback` — 抓不到全文时允许摘要兜底入库
-- `--auth-auto-refresh` / `--no-auth-auto-refresh` — 是否自动刷新登录态（默认开启）
+- `--auth-auto-refresh` / `--no-auth-auto-refresh` — 兼容保留参数；后台执行模式下不会自动刷新登录态
 - `--keywords kw1 kw2 ...` — 自定义搜索关键词（覆盖预设主题）
 
 示例：
@@ -131,14 +131,14 @@ python3 -u main.py $ARGUMENTS
 
 ```bash
 cd {baseDir}/scripts
-python3 -u main.py --topic all --daily-total-limit 3 --require-full-content --auth-auto-refresh
+python3 -u main.py --topic all --daily-total-limit 3 --require-full-content
 ```
 
 说明：
-- 自动检查并保活登录态（48 小时内将过期会触发刷新）
+- 仅使用现有 `playwright_state.json` 登录态，不会在后台执行里弹出交互式登录
+- 若登录态缺失或已过期，任务会直接失败并提示先手动运行 `python3 login_helper.py`
 - 每天跨主题最多入库 3 篇最新新文章
 - 正文未通过“全文判定”时不入库，避免“只抓一页”伪成功
-- 若遇验证码/人工验证，脚本会提示你在浏览器完成一次验证后继续
 
 脚本运行期间，持续读取输出并向用户实时展示进度（见上方「进度展示」要求）。
 

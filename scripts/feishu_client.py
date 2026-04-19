@@ -2,6 +2,8 @@
 
 import time
 import urllib.parse
+from typing import Optional
+
 import requests
 from config import (
     FEISHU_APP_ID,
@@ -17,7 +19,7 @@ class FeishuClient:
     def __init__(self):
         self._token: str = ""
         self._token_expires_at: float = 0
-        self._field_name_map: dict[str, str] | None = None
+        self._field_name_map: Optional[dict[str, str]] = None
 
     # ── 认证 ──────────────────────────────────────────────
 

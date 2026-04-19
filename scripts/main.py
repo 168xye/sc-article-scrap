@@ -119,7 +119,7 @@ def run(
     fetch_content: bool = True,
     daily_total_limit: int = 3,
     require_full_content: bool = True,
-    auth_auto_refresh: bool = True,
+    auth_auto_refresh: bool = False,
 ):
     start_time = time.time()
     total_phases = 3 + len(topics)  # 认证 + 连接 + N个主题搜索 + 处理
@@ -136,11 +136,9 @@ def run(
     p("PHASE", f"({current_phase}/{total_phases}) 检查麦肯锡登录状态...")
     if fetch_content:
         ok = ensure_auth_state(auto_refresh=auth_auto_refresh, emit=p)
-        if not ok and require_full_content:
+        if not ok:
             p("FAIL", "认证不可用且要求必须全文，任务终止")
             sys.exit(1)
-        if not ok:
-            p("PROGRESS", "认证不可用，将以摘要兜底继续")
 
     # ── Phase 2: 连接飞书 & 加载去重数据 ──
     current_phase += 1
@@ -273,13 +271,6 @@ def _do_run(
     else:
         p("PHASE", f"({current_phase}/{total_phases}) 开始处理 {total_articles} 篇新文章...")
 
-        def _auth_refresh_once() -> bool:
-            return ensure_auth_state(
-                auto_refresh=auth_auto_refresh,
-                force_refresh=True,
-                emit=p,
-            )
-
         for idx, (topic, article) in enumerate(selected_articles, 1):
             label = TOPIC_LABELS.get(topic, topic)
             title_short = article.title[:55]
@@ -293,7 +284,6 @@ def _do_run(
                     scraper.fetch_article_content(
                         article,
                         require_full_content=require_full_content,
-                        auth_refresh_handler=_auth_refresh_once,
                     )
                     para_count = len(article.content_paragraphs)
                     step_status["抓取"] = f"✅ {para_count}段"
@@ -435,14 +425,14 @@ def main():
         "--auth-auto-refresh",
         dest="auth_auto_refresh",
         action="store_true",
-        default=True,
-        help="自动刷新登录态（默认开启）",
+        default=False,
+        help="兼容保留参数；后台执行模式下不会自动刷新登录态",
     )
     parser.add_argument(
         "--no-auth-auto-refresh",
         dest="auth_auto_refresh",
         action="store_false",
-        help="禁用自动刷新登录态",
+        help="显式关闭自动刷新登录态（默认即关闭）",
     )
 
     args = parser.parse_args()

@@ -14,7 +14,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Callable, Optional
 from urllib.parse import urljoin, urlparse
 
 import requests
@@ -239,12 +239,12 @@ class McKinseyScraper:
         article: Article,
         *,
         require_full_content: bool = True,
-        auth_refresh_handler: Callable[[], bool] | None = None,
+        auth_refresh_handler: Optional[Callable[[], bool]] = None,
     ) -> Article:
         self._warmup_cffi()
 
         retried_after_auth_refresh = False
-        last_error: Exception | None = None
+        last_error: Optional[Exception] = None
 
         while True:
             try:
@@ -276,7 +276,7 @@ class McKinseyScraper:
         *,
         require_full_content: bool,
     ) -> None:
-        last_error: Exception | None = None
+        last_error: Optional[Exception] = None
         cffi_escalate = False
         success = False
 
@@ -592,7 +592,7 @@ class McKinseyScraper:
         html: str,
         current_url: str,
         visited: set[str],
-    ) -> str | None:
+    ) -> Optional[str]:
         soup = BeautifulSoup(html, "html.parser")
         candidates: list[str] = []
 
