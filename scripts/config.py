@@ -80,7 +80,7 @@ ARTICLE_FETCH_BACKOFF_SCHEDULE = [5, 10]
 
 # curl_cffi 浏览器指纹池（按尝试轮换）。新指纹被 WAF 收录需要时间，
 # 失败时把更新的版本追加到最前面即可。
-ARTICLE_FETCH_IMPERSONATE_POOL = ["chrome133", "chrome131", "chrome124"]
+ARTICLE_FETCH_IMPERSONATE_POOL = ["chrome131", "chrome133", "chrome124"]
 
 # ── Playwright 兜底 ───────────────────────────────────────
 # requests 全部失败时启动无头浏览器兜底。
