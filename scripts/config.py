@@ -47,8 +47,12 @@ REQUEST_DELAY_SECONDS = 60
 ARTICLE_FETCH_TIMEOUT_CONNECT = 10
 ARTICLE_FETCH_TIMEOUT_READ = 180
 
-# requests 失败后的退避（秒）。总尝试次数 = 1 + len(schedule)。
+# 请求失败后的退避（秒）。总尝试次数 = 1 + len(schedule)。
 ARTICLE_FETCH_BACKOFF_SCHEDULE = [5, 10]
+
+# curl_cffi 浏览器指纹池（按尝试轮换）。新指纹被 WAF 收录需要时间，
+# 失败时把更新的版本追加到最前面即可。
+ARTICLE_FETCH_IMPERSONATE_POOL = ["chrome133", "chrome131", "chrome124"]
 
 # ── Playwright 兜底 ───────────────────────────────────────
 # requests 全部失败时启动无头浏览器兜底。

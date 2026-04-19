@@ -16,11 +16,12 @@ from dataclasses import dataclass, field
 from typing import Optional
 from urllib.parse import urljoin, urlparse
 
-import requests
 from bs4 import BeautifulSoup
+from curl_cffi import requests as curl_cffi_requests
 
 from config import (
     ARTICLE_FETCH_BACKOFF_SCHEDULE,
+    ARTICLE_FETCH_IMPERSONATE_POOL,
     ARTICLE_FETCH_TIMEOUT_CONNECT,
     ARTICLE_FETCH_TIMEOUT_READ,
     CATEGORY_LIST_MAX_PAGES,
@@ -95,10 +96,7 @@ class McKinseyScraper:
     """mckinsey.com.cn 爬虫：分类页列表 + 文章正文。"""
 
     def __init__(self):
-        self._session = requests.Session()
-        self._session.headers.update(_BROWSER_HEADERS)
-        if _PROXY_DICT:
-            self._session.proxies.update(_PROXY_DICT)
+        self._cffi_sessions: dict[str, object] = {}
 
         self._playwright = None
         self._browser_context = None
@@ -107,6 +105,24 @@ class McKinseyScraper:
             "playwright-user-data",
         )
         os.makedirs(self._playwright_user_data_dir, exist_ok=True)
+
+    def _get_cffi_session(self, impersonate: str):
+        if impersonate not in self._cffi_sessions:
+            sess = curl_cffi_requests.Session(
+                impersonate=impersonate,
+                proxies=_PROXY_DICT,
+            )
+            sess.headers.update(_BROWSER_HEADERS)
+            self._cffi_sessions[impersonate] = sess
+        return self._cffi_sessions[impersonate]
+
+    def _cffi_get(self, url: str, *, impersonate: str):
+        sess = self._get_cffi_session(impersonate)
+        return sess.get(
+            url,
+            timeout=(ARTICLE_FETCH_TIMEOUT_CONNECT, ARTICLE_FETCH_TIMEOUT_READ),
+            allow_redirects=True,
+        )
 
     # ─────────────────────────────────────────────────────
     # 列表：分类页
@@ -158,7 +174,8 @@ class McKinseyScraper:
         return self.search_category(category_path, limit=limit)
 
     def _fetch_listing_html(self, url: str) -> Optional[str]:
-        """抓分类列表页：连接快失败、读取给足时间，失败时按退避重试。"""
+        """抓分类列表页：curl_cffi + TLS 指纹轮换，失败按退避重试。"""
+        fingerprint_pool = ARTICLE_FETCH_IMPERSONATE_POOL or ["chrome124"]
         attempts = max(1, 1 + len(ARTICLE_FETCH_BACKOFF_SCHEDULE))
         last_error: Optional[Exception] = None
 
@@ -167,16 +184,10 @@ class McKinseyScraper:
                 backoff = ARTICLE_FETCH_BACKOFF_SCHEDULE[attempt_idx - 1]
                 _emit("PROGRESS", f"    列表页重试前等待 {backoff}s")
                 time.sleep(backoff)
+            impersonate = fingerprint_pool[attempt_idx % len(fingerprint_pool)]
             try:
-                logger.info(f"分类列表: {url}")
-                resp = self._session.get(
-                    url,
-                    timeout=(
-                        ARTICLE_FETCH_TIMEOUT_CONNECT,
-                        ARTICLE_FETCH_TIMEOUT_READ,
-                    ),
-                    allow_redirects=True,
-                )
+                logger.info(f"分类列表: {url} (指纹 {impersonate})")
+                resp = self._cffi_get(url, impersonate=impersonate)
                 if resp.status_code == 404:
                     return None
                 resp.raise_for_status()
@@ -184,7 +195,10 @@ class McKinseyScraper:
             except Exception as e:
                 last_error = e
                 logger.warning(f"分类列表请求失败 ({url}): {e}")
-                _emit("PROGRESS", f"    列表页请求失败: {str(e)[:180]}")
+                _emit(
+                    "PROGRESS",
+                    f"    列表页失败（指纹 {impersonate}）: {str(e)[:180]}",
+                )
 
         _emit("FAIL", f"列表页重试用尽 ({url}): {last_error}")
         return None
@@ -325,16 +339,18 @@ class McKinseyScraper:
     ) -> Article:
         last_error: Optional[Exception] = None
         success = False
+        fingerprint_pool = ARTICLE_FETCH_IMPERSONATE_POOL or ["chrome124"]
         attempts = max(1, 1 + len(ARTICLE_FETCH_BACKOFF_SCHEDULE))
 
         for attempt_idx in range(attempts):
             if attempt_idx > 0:
                 backoff = ARTICLE_FETCH_BACKOFF_SCHEDULE[attempt_idx - 1]
-                _emit("PROGRESS", f"    requests 重试前等待 {backoff}s")
+                _emit("PROGRESS", f"    curl_cffi 重试前等待 {backoff}s")
                 time.sleep(backoff)
 
+            impersonate = fingerprint_pool[attempt_idx % len(fingerprint_pool)]
             try:
-                html = self._fetch_html_via_requests(article.url)
+                html = self._fetch_html_via_cffi(article.url, impersonate=impersonate)
                 self._populate_article_from_html(article, html)
                 if require_full_content:
                     ok, reason = self._is_full_text_complete(
@@ -345,16 +361,16 @@ class McKinseyScraper:
                 success = True
                 _emit(
                     "PROGRESS",
-                    f"    requests 成功（{len(article.content_paragraphs)} 段）",
+                    f"    curl_cffi 成功（指纹 {impersonate}，{len(article.content_paragraphs)} 段）",
                 )
                 break
             except Exception as e:
                 last_error = e
                 short = str(e)[:180]
-                _emit("PROGRESS", f"    requests 失败: {short}")
+                _emit("PROGRESS", f"    curl_cffi 失败（{impersonate}）: {short}")
 
         if not success and PLAYWRIGHT_FALLBACK_ENABLED:
-            _emit("PROGRESS", "    requests 全部失败，启动 Playwright 兜底")
+            _emit("PROGRESS", "    curl_cffi 全部失败，启动 Playwright 兜底")
             try:
                 html = self._fetch_html_via_playwright(article.url)
                 self._populate_article_from_html(article, html)
@@ -377,12 +393,8 @@ class McKinseyScraper:
             raise RuntimeError(str(last_error))
         return article
 
-    def _fetch_html_via_requests(self, url: str) -> str:
-        resp = self._session.get(
-            url,
-            timeout=(ARTICLE_FETCH_TIMEOUT_CONNECT, ARTICLE_FETCH_TIMEOUT_READ),
-            allow_redirects=True,
-        )
+    def _fetch_html_via_cffi(self, url: str, *, impersonate: str) -> str:
+        resp = self._cffi_get(url, impersonate=impersonate)
         resp.raise_for_status()
         return resp.text
 
@@ -638,6 +650,13 @@ class McKinseyScraper:
     # ── 清理 ─────────────────────────────────────────────
 
     def _reset_runtime_clients(self) -> None:
+        for sess in self._cffi_sessions.values():
+            try:
+                sess.close()
+            except Exception:
+                pass
+        self._cffi_sessions = {}
+
         if self._browser_context is not None:
             try:
                 self._browser_context.close()
