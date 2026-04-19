@@ -56,13 +56,15 @@ REQUEST_DELAY_SECONDS = 60
 ARTICLE_FETCH_TIMEOUT_CONNECT = 10
 ARTICLE_FETCH_TIMEOUT_READ = 180
 
-# 403/抓取失败后的退避序列（秒）。列表长度 = 重试次数。
-# 这里故意保持很短，失败后尽快切到 Playwright，避免单篇文章卡太久。
-ARTICLE_FETCH_BACKOFF_SCHEDULE = [5]
+# 403/抓取失败后的退避序列（秒）。总尝试次数 = 1 + len(schedule)。
+# 让尝试次数 ≥ ARTICLE_FETCH_IMPERSONATE_POOL 长度，保证每个指纹都能被用到一次。
+# 短退避：失败后尽快切到 Playwright，避免单篇卡太久。
+ARTICLE_FETCH_BACKOFF_SCHEDULE = [5, 10]
 
-# curl_cffi 浏览器指纹池（按尝试轮换）。
-# 常用: chrome120 / chrome124 / chrome131
-ARTICLE_FETCH_IMPERSONATE_POOL = ["chrome124", "chrome131"]
+# curl_cffi 浏览器指纹池（按尝试轮换，越新越先试）。
+# 常用: chrome120 / chrome124 / chrome131 / chrome133 / chrome136
+# 新指纹被 Akamai 收录需要时间，失败时把新版本追加到最前面即可。
+ARTICLE_FETCH_IMPERSONATE_POOL = ["chrome133", "chrome131", "chrome124"]
 
 # ── Playwright 兜底 ───────────────────────────────────────
 # 当 curl_cffi 全部重试失败、或 curl_cffi 响应疑似被登录墙/付费墙拦截时，
