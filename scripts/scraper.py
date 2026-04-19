@@ -35,7 +35,6 @@ from config import (
     PLAYWRIGHT_TIMEOUT_MS,
     PROXY_URL,
     REQUEST_DELAY_SECONDS,
-    REQUEST_TIMEOUT_SECONDS,
 )
 
 _PROXY_DICT = {"http": PROXY_URL, "https": PROXY_URL} if PROXY_URL else None
@@ -131,19 +130,8 @@ class McKinseyScraper:
             else:
                 url = base + clean_path + f"page/{page_idx + 1}/"
 
-            try:
-                logger.info(f"分类列表: {url}")
-                resp = self._session.get(
-                    url,
-                    timeout=REQUEST_TIMEOUT_SECONDS,
-                    allow_redirects=True,
-                )
-                if resp.status_code == 404:
-                    break
-                resp.raise_for_status()
-                html = resp.text
-            except Exception as e:
-                logger.error(f"分类列表请求失败 ({url}): {e}")
+            html = self._fetch_listing_html(url)
+            if html is None:
                 break
 
             found = self._parse_category_page(html, base_url=url)
@@ -168,6 +156,38 @@ class McKinseyScraper:
     def search_topic(self, category_path: str, limit: int = 10) -> list[Article]:
         """保留旧名，签名语义变更为「分类路径」。"""
         return self.search_category(category_path, limit=limit)
+
+    def _fetch_listing_html(self, url: str) -> Optional[str]:
+        """抓分类列表页：连接快失败、读取给足时间，失败时按退避重试。"""
+        attempts = max(1, 1 + len(ARTICLE_FETCH_BACKOFF_SCHEDULE))
+        last_error: Optional[Exception] = None
+
+        for attempt_idx in range(attempts):
+            if attempt_idx > 0:
+                backoff = ARTICLE_FETCH_BACKOFF_SCHEDULE[attempt_idx - 1]
+                _emit("PROGRESS", f"    列表页重试前等待 {backoff}s")
+                time.sleep(backoff)
+            try:
+                logger.info(f"分类列表: {url}")
+                resp = self._session.get(
+                    url,
+                    timeout=(
+                        ARTICLE_FETCH_TIMEOUT_CONNECT,
+                        ARTICLE_FETCH_TIMEOUT_READ,
+                    ),
+                    allow_redirects=True,
+                )
+                if resp.status_code == 404:
+                    return None
+                resp.raise_for_status()
+                return resp.text
+            except Exception as e:
+                last_error = e
+                logger.warning(f"分类列表请求失败 ({url}): {e}")
+                _emit("PROGRESS", f"    列表页请求失败: {str(e)[:180]}")
+
+        _emit("FAIL", f"列表页重试用尽 ({url}): {last_error}")
+        return None
 
     def _parse_category_page(self, html: str, *, base_url: str) -> list[Article]:
         soup = BeautifulSoup(html, "html.parser")
