@@ -2,9 +2,6 @@ requests>=2.31.0
 beautifulsoup4>=4.12.0
 python-dotenv>=1.0.0
 
-# 主路径：curl_cffi 用 Chrome 真实 TLS 指纹发请求，绕开 Akamai/Cloudflare 的指纹识别
-curl_cffi>=0.7.0
-
-# 兜底路径：curl_cffi 全部失败时改用无头 Chromium
+# 兜底路径：requests 失败时启动无头浏览器
 # 装完后需要执行一次：python3 -m playwright install chromium
 playwright>=1.40.0

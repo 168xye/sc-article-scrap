@@ -1,44 +1,37 @@
 """
-麦肯锡文章爬虫
+麦肯锡中国（mckinsey.com.cn）文章爬虫
 
 抓取链路：
-- 列表：麦肯锡搜索 API（requests）
-- 详情：curl_cffi（TLS 指纹轮换）→ Playwright 持久上下文兜底
-- 登录：storage_state + 自动刷新（由 main/auth_manager 协同触发）
+- 列表：WordPress 分类页（requests + BeautifulSoup）
+- 详情：requests 主路径，Playwright 兜底
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass, field
-from typing import Callable, Optional
+from typing import Optional
 from urllib.parse import urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
-from curl_cffi import requests as curl_cffi_requests
 
 from config import (
     ARTICLE_FETCH_BACKOFF_SCHEDULE,
-    ARTICLE_FETCH_IMPERSONATE_POOL,
     ARTICLE_FETCH_TIMEOUT_CONNECT,
     ARTICLE_FETCH_TIMEOUT_READ,
+    CATEGORY_LIST_MAX_PAGES,
     CONTENT_STABLE_ROUNDS,
-    CONTINUE_READING_MARKERS,
-    CONTINUE_READING_SELECTORS,
     FULLTEXT_MIN_PARAGRAPHS,
-    LOGIN_WALL_MARKERS,
     MCKINSEY_BASE,
-    MCKINSEY_SEARCH_API,
     PAGINATION_MAX_PAGES,
     PLAYWRIGHT_CHANNEL,
     PLAYWRIGHT_FALLBACK_ENABLED,
     PLAYWRIGHT_LAUNCH_ARGS,
     PLAYWRIGHT_STEALTH_JS,
-    PLAYWRIGHT_STORAGE_STATE_PATH,
     PLAYWRIGHT_TIMEOUT_MS,
     PROXY_URL,
     REQUEST_DELAY_SECONDS,
@@ -56,43 +49,31 @@ _BROWSER_HEADERS = {
         "Chrome/124.0.0.0 Safari/537.36"
     ),
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
     "Accept-Encoding": "gzip, deflate, br",
     "Connection": "keep-alive",
 }
 
-_API_HEADERS = {
-    "User-Agent": _BROWSER_HEADERS["User-Agent"],
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Origin": "https://www.mckinsey.com",
-    "Referer": "https://www.mckinsey.com/",
-}
+_DATE_RE = re.compile(r"(20\d{2})[/.\-](\d{1,2})[/.\-](\d{1,2})")
 
-_CONTENT_EXTRA_HEADERS = {
-    "Referer": "https://www.mckinsey.com/",
-    "Cache-Control": "max-age=0",
-    "Upgrade-Insecure-Requests": "1",
-}
-
-_TRUNCATION_TAIL_MARKERS = [
-    "continue reading",
-    "read more",
-    "show full article",
-    "sign in to read",
-    "register to continue",
-]
+# 列表页中这些路径前缀不视为文章详情。
+_NON_ARTICLE_PATH_PREFIXES = (
+    "/insights/",
+    "/category/",
+    "/tag/",
+    "/page/",
+    "/author/",
+    "/contact",
+    "/about",
+    "/careers",
+    "/search",
+    "/wp-",
+    "/feed",
+)
 
 
 def _emit(tag: str, msg: str) -> None:
     print(f"[{tag}] {msg}", flush=True)
-
-
-def _contains_any(html: str, markers: list[str]) -> bool:
-    if not html:
-        return False
-    lower = html.lower()
-    return any(m.lower() in lower for m in markers)
 
 
 @dataclass
@@ -107,16 +88,12 @@ class Article:
     content_paragraphs: list[str] = field(default_factory=list)
 
 
-class _CffiEscalateError(Exception):
-    pass
-
-
 class _IncompleteContentError(Exception):
     pass
 
 
 class McKinseyScraper:
-    """基于搜索 API + cffi + Playwright 持久上下文的爬虫。"""
+    """mckinsey.com.cn 爬虫：分类页列表 + 文章正文。"""
 
     def __init__(self):
         self._session = requests.Session()
@@ -124,111 +101,197 @@ class McKinseyScraper:
         if _PROXY_DICT:
             self._session.proxies.update(_PROXY_DICT)
 
-        self._cffi_sessions: dict[str, object] = {}
-        self._cffi_warmed_up = False
-
         self._playwright = None
         self._browser_context = None
-
-        self._has_storage_state = os.path.exists(PLAYWRIGHT_STORAGE_STATE_PATH)
         self._playwright_user_data_dir = os.path.join(
-            os.path.dirname(PLAYWRIGHT_STORAGE_STATE_PATH),
+            os.path.dirname(__file__),
             "playwright-user-data",
         )
         os.makedirs(self._playwright_user_data_dir, exist_ok=True)
 
     # ─────────────────────────────────────────────────────
-    # 搜索 API
+    # 列表：分类页
     # ─────────────────────────────────────────────────────
 
-    def search_articles(
-        self, keyword: str, limit: int = 10, sort: str = "default"
-    ) -> list[Article]:
-        articles = []
-        seen_urls = set()
-        start = 1
+    def search_category(self, category_path: str, limit: int = 10) -> list[Article]:
+        """按分类路径翻页抓取文章列表。"""
+        if not category_path:
+            return []
 
-        while len(articles) < limit:
-            params = {
-                "q": keyword,
-                "start": start,
-                "sort": sort,
-                "pageFilter": "all",
-            }
+        base = MCKINSEY_BASE.rstrip("/")
+        clean_path = "/" + category_path.strip("/") + "/"
+        articles: dict[str, Article] = {}
+
+        for page_idx in range(CATEGORY_LIST_MAX_PAGES):
+            if len(articles) >= limit:
+                break
+
+            if page_idx == 0:
+                url = base + clean_path
+            else:
+                url = base + clean_path + f"page/{page_idx + 1}/"
 
             try:
-                logger.info(f"搜索 API: keyword={keyword!r}, start={start}")
+                logger.info(f"分类列表: {url}")
                 resp = self._session.get(
-                    MCKINSEY_SEARCH_API,
-                    params=params,
-                    headers=_API_HEADERS,
+                    url,
                     timeout=REQUEST_TIMEOUT_SECONDS,
+                    allow_redirects=True,
                 )
-                resp.raise_for_status()
-                data = resp.json()
-            except Exception as e:
-                logger.error(f"搜索 API 请求失败: {e}")
-                break
-
-            if data.get("status") != "OK":
-                logger.error(f"搜索 API 返回异常: {data.get('statusMessage')}")
-                break
-
-            results = data.get("results", [])
-            if not results:
-                break
-
-            for item in results:
-                if len(articles) >= limit:
+                if resp.status_code == 404:
                     break
+                resp.raise_for_status()
+                html = resp.text
+            except Exception as e:
+                logger.error(f"分类列表请求失败 ({url}): {e}")
+                break
 
-                url = item.get("url") or item.get("metatag.url", "")
-                if not url or url in seen_urls:
-                    continue
-                seen_urls.add(url)
+            found = self._parse_category_page(html, base_url=url)
+            new_this_page = 0
+            for a in found:
+                if a.url not in articles:
+                    articles[a.url] = a
+                    new_this_page += 1
 
-                title = item.get("metatag.title", "").strip()
-                if not title:
-                    continue
-
-                summary = (item.get("description") or "").strip()
-                article = Article(
-                    title=title,
-                    url=url,
-                    summary=summary,
-                    date=self._parse_api_date(item.get("metatag.itemdate", "")),
-                    authors=item.get("metatag.authors-name", "") or "",
-                    content_type=item.get("metatag.contenttype", ""),
-                )
-                articles.append(article)
-
-            num_found = data.get("numFound", 0)
-            start += len(results)
-            if start > num_found:
+            if new_this_page == 0:
                 break
 
             time.sleep(1)
 
-        return articles
-
-    def search_topic(
-        self, keywords: list[str], limit: int = 10
-    ) -> list[Article]:
-        all_articles: dict[str, Article] = {}
-        per_keyword_limit = max(limit, 10)
-
-        for kw in keywords:
-            results = self.search_articles(kw, limit=per_keyword_limit, sort="newest")
-            for a in results:
-                if a.url not in all_articles:
-                    all_articles[a.url] = a
-
         sorted_articles = sorted(
-            all_articles.values(),
+            articles.values(),
             key=lambda a: a.date or "",
             reverse=True,
         )
         return sorted_articles[:limit]
+
+    def search_topic(self, category_path: str, limit: int = 10) -> list[Article]:
+        """保留旧名，签名语义变更为「分类路径」。"""
+        return self.search_category(category_path, limit=limit)
+
+    def _parse_category_page(self, html: str, *, base_url: str) -> list[Article]:
+        soup = BeautifulSoup(html, "html.parser")
+        base_host = urlparse(base_url).netloc
+
+        # 先找常见 WordPress 文章卡片容器
+        card_selectors = (
+            "article.post",
+            "article[class*='post-']",
+            ".post",
+            ".entry",
+            ".hentry",
+            ".post-item",
+            ".insight-item",
+            ".insights-card",
+            ".card",
+        )
+        seen_nodes: set[int] = set()
+        cards = []
+        for sel in card_selectors:
+            for node in soup.select(sel):
+                if id(node) in seen_nodes:
+                    continue
+                seen_nodes.add(id(node))
+                cards.append(node)
+
+        articles: list[Article] = []
+        seen_urls: set[str] = set()
+
+        for card in cards:
+            article = self._build_article_from_card(card, base_url, base_host)
+            if article and article.url not in seen_urls:
+                seen_urls.add(article.url)
+                articles.append(article)
+
+        if articles:
+            return articles
+
+        # 回退：直接扫所有锚点，靠 URL 形态判文章页
+        for a_tag in soup.find_all("a", href=True):
+            absolute = self._normalize_url(urljoin(base_url, a_tag["href"]))
+            if not absolute or not self._is_article_url(absolute, base_host):
+                continue
+            if absolute in seen_urls:
+                continue
+
+            title = a_tag.get_text(" ", strip=True) or (a_tag.get("title") or "").strip()
+            if len(title) < 5:
+                continue
+
+            date = ""
+            ctx = a_tag
+            for _ in range(4):
+                ctx = ctx.parent if ctx else None
+                if not ctx:
+                    break
+                date = _extract_date(ctx.get_text(" ", strip=True))
+                if date:
+                    break
+
+            seen_urls.add(absolute)
+            articles.append(Article(title=title, url=absolute, date=date))
+
+        return articles
+
+    def _build_article_from_card(
+        self,
+        card,
+        base_url: str,
+        base_host: str,
+    ) -> Optional[Article]:
+        a_tag = None
+        for candidate in card.find_all("a", href=True):
+            absolute = self._normalize_url(urljoin(base_url, candidate["href"]))
+            if absolute and self._is_article_url(absolute, base_host):
+                a_tag = candidate
+                break
+        if a_tag is None:
+            return None
+
+        url = self._normalize_url(urljoin(base_url, a_tag["href"]))
+        if not url:
+            return None
+
+        title = ""
+        for sel in ("h1", "h2", "h3", "h4", ".post-title", ".entry-title"):
+            h = card.select_one(sel)
+            if h:
+                title = h.get_text(" ", strip=True)
+                if title:
+                    break
+        if not title:
+            title = a_tag.get_text(" ", strip=True) or (a_tag.get("title") or "").strip()
+        if not title:
+            return None
+
+        date = _extract_date(card.get_text(" ", strip=True))
+        return Article(title=title, url=url, date=date)
+
+    @staticmethod
+    def _is_article_url(url: str, host: str) -> bool:
+        parsed = urlparse(url)
+        if parsed.netloc != host:
+            return False
+        path = parsed.path or ""
+        if path in ("", "/"):
+            return False
+        for prefix in _NON_ARTICLE_PATH_PREFIXES:
+            if path.startswith(prefix):
+                return False
+        return True
+
+    @staticmethod
+    def _normalize_url(url: str) -> str:
+        """去掉 query/fragment 并保证结尾斜杠，便于稳定去重。"""
+        if not url:
+            return ""
+        parsed = urlparse(url)
+        if not parsed.scheme.startswith("http"):
+            return ""
+        path = parsed.path or "/"
+        if not path.endswith("/"):
+            path += "/"
+        return f"{parsed.scheme}://{parsed.netloc}{path}"
 
     # ─────────────────────────────────────────────────────
     # 文章详情主入口
@@ -239,177 +302,71 @@ class McKinseyScraper:
         article: Article,
         *,
         require_full_content: bool = True,
-        auth_refresh_handler: Optional[Callable[[], bool]] = None,
     ) -> Article:
-        self._warmup_cffi()
-
-        retried_after_auth_refresh = False
         last_error: Optional[Exception] = None
-
-        while True:
-            try:
-                self._fetch_article_content_once(
-                    article,
-                    require_full_content=require_full_content,
-                )
-                time.sleep(REQUEST_DELAY_SECONDS)
-                return article
-            except Exception as e:
-                last_error = e
-                if retried_after_auth_refresh or auth_refresh_handler is None:
-                    break
-
-                _emit("PROGRESS", "    启动登录态刷新后重试该文章（仅一次）")
-                refreshed = auth_refresh_handler()
-                if not refreshed:
-                    break
-
-                self._reset_runtime_clients()
-                retried_after_auth_refresh = True
-
-        time.sleep(REQUEST_DELAY_SECONDS)
-        raise RuntimeError(str(last_error))
-
-    def _fetch_article_content_once(
-        self,
-        article: Article,
-        *,
-        require_full_content: bool,
-    ) -> None:
-        last_error: Optional[Exception] = None
-        cffi_escalate = False
         success = False
-
-        fingerprint_pool = ARTICLE_FETCH_IMPERSONATE_POOL or ["chrome124"]
         attempts = max(1, 1 + len(ARTICLE_FETCH_BACKOFF_SCHEDULE))
 
         for attempt_idx in range(attempts):
             if attempt_idx > 0:
                 backoff = ARTICLE_FETCH_BACKOFF_SCHEDULE[attempt_idx - 1]
-                _emit("PROGRESS", f"    curl_cffi 重试前等待 {backoff}s")
+                _emit("PROGRESS", f"    requests 重试前等待 {backoff}s")
                 time.sleep(backoff)
 
-            impersonate = fingerprint_pool[attempt_idx % len(fingerprint_pool)]
-
             try:
-                html = self._fetch_html_via_cffi(article.url, impersonate=impersonate)
+                html = self._fetch_html_via_requests(article.url)
                 self._populate_article_from_html(article, html)
                 if require_full_content:
                     ok, reason = self._is_full_text_complete(
-                        html,
-                        article.content_paragraphs,
+                        html, article.content_paragraphs
                     )
                     if not ok:
                         raise _IncompleteContentError(reason)
                 success = True
                 _emit(
                     "PROGRESS",
-                    f"    curl_cffi 成功（指纹 {impersonate}，{len(article.content_paragraphs)} 段）",
+                    f"    requests 成功（{len(article.content_paragraphs)} 段）",
                 )
-                break
-            except _CffiEscalateError as e:
-                last_error = e
-                cffi_escalate = True
-                _emit("PROGRESS", f"    curl_cffi: {e}，直接切 Playwright")
                 break
             except Exception as e:
                 last_error = e
-                short_err = str(e)[:180]
-                _emit("PROGRESS", f"    curl_cffi 失败（{impersonate}）: {short_err}")
-                if "403" in short_err or "HTTP Error 403" in short_err:
-                    _emit("PROGRESS", "    检测到 403，直接切 Playwright")
-                    break
+                short = str(e)[:180]
+                _emit("PROGRESS", f"    requests 失败: {short}")
 
-        if success:
-            return
-
-        if not PLAYWRIGHT_FALLBACK_ENABLED:
-            raise RuntimeError(f"curl_cffi 全部失败: {last_error}")
-
-        reason = "被拦截" if cffi_escalate else "重试用尽"
-        _emit("PROGRESS", f"    curl_cffi {reason}，启动 Playwright 持久上下文兜底")
-        html = self._fetch_html_via_playwright(article.url)
-        self._populate_article_from_html(article, html)
-
-        if require_full_content:
-            ok, complete_reason = self._is_full_text_complete(
-                html,
-                article.content_paragraphs,
-            )
-            if not ok:
-                raise _IncompleteContentError(complete_reason)
-
-        _emit("PROGRESS", f"    Playwright 成功: {len(article.content_paragraphs)} 段")
-
-    # ── curl_cffi 子步骤 ─────────────────────────────────
-
-    def _get_cffi_session(self, impersonate: str):
-        if impersonate not in self._cffi_sessions:
-            sess = curl_cffi_requests.Session(
-                impersonate=impersonate,
-                proxies=_PROXY_DICT,
-            )
-            sess.headers.update(_CONTENT_EXTRA_HEADERS)
-            self._apply_storage_state_cookies(sess)
-            self._cffi_sessions[impersonate] = sess
-        return self._cffi_sessions[impersonate]
-
-    def _apply_storage_state_cookies(self, session) -> None:
-        if not os.path.exists(PLAYWRIGHT_STORAGE_STATE_PATH):
-            return
-        try:
-            with open(PLAYWRIGHT_STORAGE_STATE_PATH, encoding="utf-8") as f:
-                state = json.load(f)
-            for c in state.get("cookies", []):
-                domain = c.get("domain", "")
-                if "mckinsey.com" not in domain:
-                    continue
-                try:
-                    session.cookies.set(
-                        c["name"],
-                        c["value"],
-                        domain=domain,
-                        path=c.get("path", "/"),
+        if not success and PLAYWRIGHT_FALLBACK_ENABLED:
+            _emit("PROGRESS", "    requests 全部失败，启动 Playwright 兜底")
+            try:
+                html = self._fetch_html_via_playwright(article.url)
+                self._populate_article_from_html(article, html)
+                if require_full_content:
+                    ok, reason = self._is_full_text_complete(
+                        html, article.content_paragraphs
                     )
-                except Exception:
-                    continue
-        except Exception as e:
-            logger.warning(f"curl_cffi 加载登录状态失败: {e}")
+                    if not ok:
+                        raise _IncompleteContentError(reason)
+                success = True
+                _emit(
+                    "PROGRESS",
+                    f"    Playwright 成功: {len(article.content_paragraphs)} 段",
+                )
+            except Exception as e:
+                last_error = e
 
-    def _warmup_cffi(self) -> None:
-        if self._cffi_warmed_up:
-            return
-        try:
-            first_imp = (ARTICLE_FETCH_IMPERSONATE_POOL or ["chrome124"])[0]
-            sess = self._get_cffi_session(first_imp)
-            sess.get(
-                MCKINSEY_BASE,
-                timeout=(ARTICLE_FETCH_TIMEOUT_CONNECT, 30),
-                allow_redirects=True,
-            )
-        except Exception as e:
-            logger.warning(f"curl_cffi 预热失败（继续抓取）: {e}")
-        finally:
-            self._cffi_warmed_up = True
+        time.sleep(REQUEST_DELAY_SECONDS)
+        if not success:
+            raise RuntimeError(str(last_error))
+        return article
 
-    def _fetch_html_via_cffi(self, url: str, *, impersonate: str) -> str:
-        sess = self._get_cffi_session(impersonate)
-        resp = sess.get(
+    def _fetch_html_via_requests(self, url: str) -> str:
+        resp = self._session.get(
             url,
             timeout=(ARTICLE_FETCH_TIMEOUT_CONNECT, ARTICLE_FETCH_TIMEOUT_READ),
             allow_redirects=True,
         )
         resp.raise_for_status()
-        html = resp.text
+        return resp.text
 
-        if _contains_any(html, LOGIN_WALL_MARKERS):
-            raise _CffiEscalateError("响应疑似登录墙")
-        if _contains_any(html, CONTINUE_READING_MARKERS):
-            raise _CffiEscalateError("响应包含继续阅读按钮")
-
-        return html
-
-    # ── Playwright 子步骤 ────────────────────────────────
+    # ── Playwright 兜底 ──────────────────────────────────
 
     def _ensure_playwright_context(self) -> None:
         if self._browser_context is not None:
@@ -428,7 +385,7 @@ class McKinseyScraper:
             "args": PLAYWRIGHT_LAUNCH_ARGS,
             "viewport": {"width": 1440, "height": 900},
             "user_agent": _BROWSER_HEADERS["User-Agent"],
-            "locale": "en-US",
+            "locale": "zh-CN",
         }
         if PROXY_URL:
             launch_kwargs["proxy"] = {"server": PROXY_URL}
@@ -452,44 +409,6 @@ class McKinseyScraper:
             )
 
         self._browser_context.add_init_script(PLAYWRIGHT_STEALTH_JS)
-        self._apply_storage_state_to_playwright_context()
-
-    def _apply_storage_state_to_playwright_context(self) -> None:
-        if self._browser_context is None:
-            return
-        if not os.path.exists(PLAYWRIGHT_STORAGE_STATE_PATH):
-            return
-        try:
-            with open(PLAYWRIGHT_STORAGE_STATE_PATH, encoding="utf-8") as f:
-                state = json.load(f)
-            cookies = []
-            for cookie in state.get("cookies", []):
-                domain = (cookie.get("domain") or "").lower()
-                if "mckinsey.com" not in domain:
-                    continue
-                expires = cookie.get("expires", -1)
-                c = {
-                    "name": cookie.get("name", ""),
-                    "value": cookie.get("value", ""),
-                    "path": cookie.get("path", "/"),
-                    "httpOnly": bool(cookie.get("httpOnly", False)),
-                    "secure": bool(cookie.get("secure", True)),
-                    "sameSite": cookie.get("sameSite", "Lax"),
-                }
-                if domain.startswith("."):
-                    c["domain"] = domain
-                else:
-                    c["domain"] = domain
-                if isinstance(expires, (int, float)) and expires > 0:
-                    c["expires"] = expires
-                cookies.append(c)
-
-            if cookies:
-                self._browser_context.add_cookies(cookies)
-                _emit("PROGRESS", "    Playwright 已注入登录 cookies")
-                self._has_storage_state = True
-        except Exception as e:
-            logger.warning(f"Playwright 注入登录 cookies 失败: {e}")
 
     def _fetch_html_via_playwright(self, url: str) -> str:
         self._ensure_playwright_context()
@@ -505,15 +424,17 @@ class McKinseyScraper:
 
             page = self._browser_context.new_page()
             try:
-                page.goto(current_url, wait_until="networkidle", timeout=PLAYWRIGHT_TIMEOUT_MS)
-                self._expand_content_until_stable(page)
+                page.goto(
+                    current_url,
+                    wait_until="networkidle",
+                    timeout=PLAYWRIGHT_TIMEOUT_MS,
+                )
+                self._scroll_until_stable(page)
                 html = page.content()
                 html_parts.append(html)
 
                 next_url = self.discover_next_page_from_html(
-                    html,
-                    current_url,
-                    visited,
+                    html, current_url, visited
                 )
                 if next_url and page_index + 1 < PAGINATION_MAX_PAGES:
                     _emit("PROGRESS", f"    发现下一页，继续抓取: {next_url}")
@@ -526,15 +447,16 @@ class McKinseyScraper:
 
         return "\n<!-- SC_PAGE_BREAK -->\n".join(html_parts)
 
-    def _expand_content_until_stable(self, page) -> None:
+    def _scroll_until_stable(self, page) -> None:
         stable_rounds = 0
         prev_signal = (-1, -1)
 
         while stable_rounds < CONTENT_STABLE_ROUNDS:
-            self._scroll_to_bottom(page)
-            clicked = self._click_continue_button_once(page)
-            self._scroll_to_bottom(page)
-
+            try:
+                page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            except Exception:
+                return
+            page.wait_for_timeout(1000)
             current_signal = self._content_signal(page)
             if current_signal == prev_signal:
                 stable_rounds += 1
@@ -542,40 +464,12 @@ class McKinseyScraper:
                 stable_rounds = 0
             prev_signal = current_signal
 
-            if clicked:
-                try:
-                    page.wait_for_load_state("networkidle", timeout=10000)
-                except Exception:
-                    page.wait_for_timeout(1800)
-            else:
-                page.wait_for_timeout(1200)
-
-    def _scroll_to_bottom(self, page) -> None:
-        try:
-            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            page.wait_for_timeout(800)
-        except Exception:
-            return
-
-    def _click_continue_button_once(self, page) -> bool:
-        for selector in CONTINUE_READING_SELECTORS:
-            try:
-                locator = page.locator(selector).first
-                locator.wait_for(state="visible", timeout=1200)
-                locator.scroll_into_view_if_needed(timeout=1000)
-                locator.click(timeout=2500)
-                _emit("PROGRESS", f"    Playwright 点击继续阅读 [{selector}]")
-                return True
-            except Exception:
-                continue
-        return False
-
     def _content_signal(self, page) -> tuple[int, int]:
         try:
             signal = page.evaluate(
                 """
                 () => {
-                  const container = document.querySelector('article, main, div.article-body, div[class*=ArticleBody], div.body-content') || document.body;
+                  const container = document.querySelector('article, main, .entry-content, .post-content') || document.body;
                   const paragraphs = container.querySelectorAll('p');
                   const paragraphCount = paragraphs.length;
                   const textLen = (container.innerText || '').trim().length;
@@ -606,7 +500,11 @@ class McKinseyScraper:
             href = a.get("href")
             if not href:
                 continue
-            if "page=" in href or text in {"next", "next page"} or " next" in text:
+            if (
+                "page=" in href
+                or "/page/" in href
+                or text in {"next", "next page", "下一页", "下一页 »"}
+            ):
                 candidates.append(href)
 
         current_host = urlparse(current_url).netloc
@@ -631,39 +529,68 @@ class McKinseyScraper:
         soup = BeautifulSoup(html, "html.parser")
 
         if not article.title:
-            h1 = soup.find("h1")
-            if h1:
-                article.title = h1.get_text(strip=True)
+            for sel in ("h1.entry-title", "h1.post-title", "h1"):
+                h1 = soup.select_one(sel)
+                if h1:
+                    article.title = h1.get_text(strip=True)
+                    if article.title:
+                        break
+
+        if not article.summary:
+            meta = soup.find("meta", attrs={"name": "description"}) or soup.find(
+                "meta", attrs={"property": "og:description"}
+            )
+            if meta and meta.get("content"):
+                article.summary = meta["content"].strip()
+
+        if not article.date:
+            for sel in (
+                'meta[property="article:published_time"]',
+                'meta[property="og:article:published_time"]',
+                'meta[itemprop="datePublished"]',
+                "time[datetime]",
+            ):
+                node = soup.select_one(sel)
+                if not node:
+                    continue
+                raw = node.get("content") or node.get("datetime") or node.get_text(strip=True)
+                if not raw:
+                    continue
+                article.date = _extract_date(raw) or raw[:10]
+                if article.date:
+                    break
+            if not article.date:
+                article.date = _extract_date(soup.get_text(" ", strip=True)) or ""
 
         paragraphs: list[str] = []
         seen: set[str] = set()
 
-        selectors = [
-            "div.article-body p",
-            "div[class*='ArticleBody'] p",
-            "div.body-content p",
-            "article p",
-            "main p",
-        ]
+        container_selectors = (
+            ".entry-content",
+            ".post-content",
+            "article .content",
+            "article",
+            "main",
+        )
 
-        for sel in selectors:
-            for p in soup.select(sel):
-                text = p.get_text(" ", strip=True)
-                text = " ".join(text.split())
+        for sel in container_selectors:
+            container = soup.select_one(sel)
+            if not container:
+                continue
+            for p in container.find_all("p"):
+                text = " ".join(p.get_text(" ", strip=True).split())
                 if len(text) < 20:
                     continue
                 if text in seen:
                     continue
                 seen.add(text)
                 paragraphs.append(text)
-
             if len(paragraphs) >= FULLTEXT_MIN_PARAGRAPHS:
                 break
 
         if len(paragraphs) < FULLTEXT_MIN_PARAGRAPHS:
             for p in soup.find_all("p"):
-                text = p.get_text(" ", strip=True)
-                text = " ".join(text.split())
+                text = " ".join(p.get_text(" ", strip=True).split())
                 if len(text) < 50:
                     continue
                 if text in seen:
@@ -678,11 +605,7 @@ class McKinseyScraper:
         html: str,
         paragraphs: list[str],
     ) -> tuple[bool, str]:
-        if _contains_any(html, LOGIN_WALL_MARKERS):
-            return False, "内容疑似登录墙"
-        if _contains_any(html, CONTINUE_READING_MARKERS):
-            return False, "内容仍含继续阅读按钮"
-
+        del html
         if len(paragraphs) < FULLTEXT_MIN_PARAGRAPHS:
             return False, f"正文段落不足（{len(paragraphs)} < {FULLTEXT_MIN_PARAGRAPHS}）"
 
@@ -690,23 +613,11 @@ class McKinseyScraper:
         if total_chars < FULLTEXT_MIN_PARAGRAPHS * 80:
             return False, "正文总长度不足，疑似仅摘要"
 
-        tail = paragraphs[-1].lower() if paragraphs else ""
-        if any(marker in tail for marker in _TRUNCATION_TAIL_MARKERS):
-            return False, "末段疑似截断"
-
         return True, "ok"
 
     # ── 清理 ─────────────────────────────────────────────
 
     def _reset_runtime_clients(self) -> None:
-        for sess in self._cffi_sessions.values():
-            try:
-                sess.close()
-            except Exception:
-                pass
-        self._cffi_sessions = {}
-        self._cffi_warmed_up = False
-
         if self._browser_context is not None:
             try:
                 self._browser_context.close()
@@ -724,11 +635,12 @@ class McKinseyScraper:
     def close(self) -> None:
         self._reset_runtime_clients()
 
-    @staticmethod
-    def _parse_api_date(iso_str: str) -> str:
-        if not iso_str:
-            return ""
-        try:
-            return iso_str[:10]
-        except Exception:
-            return iso_str
+
+def _extract_date(text: str) -> str:
+    if not text:
+        return ""
+    match = _DATE_RE.search(text)
+    if not match:
+        return ""
+    y, m, d = match.groups()
+    return f"{int(y):04d}-{int(m):02d}-{int(d):02d}"

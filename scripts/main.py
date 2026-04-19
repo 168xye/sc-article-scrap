@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 sc-article-scrap 主入口
-通过麦肯锡搜索 API 获取 AI、汽车、工业设计相关报告，
+按分类页抓取 mckinsey.com.cn 上 AI / 汽车 / 创新相关报告，
 将标题存入飞书多维表格，将完整内容存入飞书文档。
 """
 
@@ -12,9 +12,8 @@ import sys
 import time
 from datetime import datetime
 
-from auth_manager import ensure_auth_state
 from config import (
-    TOPIC_KEYWORDS,
+    TOPIC_CATEGORY_PATHS,
     TOPIC_LABELS,
     DEFAULT_LIMIT_PER_TOPIC,
     validate_config,
@@ -119,10 +118,9 @@ def run(
     fetch_content: bool = True,
     daily_total_limit: int = 3,
     require_full_content: bool = True,
-    auth_auto_refresh: bool = False,
 ):
     start_time = time.time()
-    total_phases = 3 + len(topics)  # 认证 + 连接 + N个主题搜索 + 处理
+    total_phases = 2 + len(topics)  # 连接 + N 个主题 + 处理
     current_phase = 0
 
     missing = validate_config()
@@ -131,16 +129,7 @@ def run(
         p("FAIL", "请在 .env 文件或环境变量中配置，参考 .env.example")
         sys.exit(1)
 
-    # ── Phase 1: 认证状态检查 ──
-    current_phase += 1
-    p("PHASE", f"({current_phase}/{total_phases}) 检查麦肯锡登录状态...")
-    if fetch_content:
-        ok = ensure_auth_state(auto_refresh=auth_auto_refresh, emit=p)
-        if not ok:
-            p("FAIL", "认证不可用且要求必须全文，任务终止")
-            sys.exit(1)
-
-    # ── Phase 2: 连接飞书 & 加载去重数据 ──
+    # ── Phase 1: 连接飞书 & 加载去重数据 ──
     current_phase += 1
     p("PHASE", f"({current_phase}/{total_phases}) 连接飞书，加载已有数据用于去重...")
 
@@ -164,7 +153,6 @@ def run(
             limit=limit,
             fetch_content=fetch_content,
             require_full_content=require_full_content,
-            auth_auto_refresh=auth_auto_refresh,
             daily_total_limit=daily_total_limit,
             existing_urls=existing_urls,
             start_time=start_time,
@@ -187,7 +175,6 @@ def _do_run(
     limit,
     fetch_content,
     require_full_content,
-    auth_auto_refresh,
     daily_total_limit,
     existing_urls,
     start_time,
@@ -207,10 +194,10 @@ def _do_run(
 
     for topic in topics:
         current_phase += 1
-        keywords = TOPIC_KEYWORDS.get(topic, [])
+        category_path = TOPIC_CATEGORY_PATHS.get(topic, "")
         label = TOPIC_LABELS.get(topic, topic)
-        p("PHASE", f"({current_phase}/{total_phases}) 搜索主题: {label}")
-        p("PROGRESS", f"关键词: {', '.join(keywords)}")
+        p("PHASE", f"({current_phase}/{total_phases}) 抓取主题: {label}")
+        p("PROGRESS", f"分类页: {category_path}")
 
         topic_stats[topic] = {
             "searched": 0,
@@ -221,7 +208,7 @@ def _do_run(
         }
 
         fetch_limit = max(limit * 3, daily_total_limit * 3)
-        articles = scraper.search_topic(keywords, limit=fetch_limit)
+        articles = scraper.search_category(category_path, limit=fetch_limit)
         topic_stats[topic]["searched"] = len(articles)
 
         if not articles:
@@ -401,12 +388,7 @@ def main():
     parser.add_argument(
         "--no-content",
         action="store_true",
-        help="不抓取正文（仅用 API 摘要）",
-    )
-    parser.add_argument(
-        "--keywords",
-        nargs="+",
-        help="自定义搜索关键词（覆盖主题默认关键词）",
+        help="不抓取正文（仅列表页摘要）",
     )
     parser.add_argument(
         "--require-full-content",
@@ -421,28 +403,10 @@ def main():
         action="store_false",
         help="抓不到全文时允许摘要兜底入库",
     )
-    parser.add_argument(
-        "--auth-auto-refresh",
-        dest="auth_auto_refresh",
-        action="store_true",
-        default=False,
-        help="兼容保留参数；后台执行模式下不会自动刷新登录态",
-    )
-    parser.add_argument(
-        "--no-auth-auto-refresh",
-        dest="auth_auto_refresh",
-        action="store_false",
-        help="显式关闭自动刷新登录态（默认即关闭）",
-    )
 
     args = parser.parse_args()
 
-    if args.keywords:
-        TOPIC_KEYWORDS["custom"] = args.keywords
-        TOPIC_LABELS["custom"] = "自定义"
-        topics = ["custom"]
-    else:
-        topics = list(TOPIC_KEYWORDS.keys()) if args.topic == "all" else [args.topic]
+    topics = list(TOPIC_CATEGORY_PATHS.keys()) if args.topic == "all" else [args.topic]
 
     run(
         topics=topics,
@@ -450,7 +414,6 @@ def main():
         fetch_content=not args.no_content,
         daily_total_limit=args.daily_total_limit,
         require_full_content=args.require_full_content,
-        auth_auto_refresh=args.auth_auto_refresh,
     )
 
 
