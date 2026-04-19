@@ -11,14 +11,26 @@ import argparse
 import sys
 import time
 from datetime import datetime
+from typing import Optional
 
 from config import (
+    FEISHU_GEO_FOLDER_TOKEN,
+    OPENAI_API_KEY,
+    OPENAI_MODEL,
+    RELEVANCE_THRESHOLD,
     TOPIC_CATEGORY_PATHS,
     TOPIC_LABELS,
     DEFAULT_LIMIT_PER_TOPIC,
     validate_config,
 )
 from feishu_client import FeishuClient
+from geo_writer import GeoWriterError, generate_geo_article
+from lark_notifier import GeoNotifyItem, LarkNotifyError, send_geo_notification
+from product_keywords import (
+    PRODUCT_KEYWORDS,
+    compute_relevance,
+    matched_keywords,
+)
 from run_state import RunStateManager
 from scraper import Article, McKinseyScraper
 
@@ -85,7 +97,13 @@ def build_feishu_doc_blocks(article: Article) -> list[dict]:
     return blocks
 
 
-def build_bitable_fields(article: Article, doc_url: str) -> dict:
+def build_bitable_fields(
+    article: Article,
+    doc_url: str,
+    *,
+    relevance: Optional[float] = None,
+    hit_keywords: Optional[list[str]] = None,
+) -> dict:
     """构造多维表格记录字段"""
     now_ms = int(time.time() * 1000)
     date_ms = None
@@ -108,8 +126,45 @@ def build_bitable_fields(article: Article, doc_url: str) -> dict:
         fields["发布日期"] = date_ms
     if article.authors:
         fields["作者"] = article.authors
+    if relevance is not None:
+        fields["关联度"] = round(float(relevance), 4)
+    if hit_keywords:
+        fields["命中关键词"] = "、".join(hit_keywords[:30])
 
     return fields
+
+
+def build_geo_doc_blocks(geo_title: str, paragraphs: list[str], source: Article) -> list[dict]:
+    blocks: list[dict] = []
+    blocks.append(FeishuClient.make_heading_block(geo_title, level=3))
+
+    meta = [
+        f"来源: 麦肯锡中国",
+        f"原文标题: {source.title}",
+        f"原文链接: {source.url}",
+        f"主题: {TOPIC_LABELS.get(source.topic, source.topic)}",
+    ]
+    for line in meta:
+        blocks.append(FeishuClient.make_text_block(line))
+    blocks.append(FeishuClient.make_divider_block())
+
+    for para in paragraphs:
+        text = para.strip()
+        if not text:
+            continue
+        if text.startswith("## "):
+            blocks.append(FeishuClient.make_heading_block(text[3:].strip(), level=4))
+        elif text.startswith("# "):
+            blocks.append(FeishuClient.make_heading_block(text[2:].strip(), level=3))
+        else:
+            blocks.append(FeishuClient.make_text_block(text))
+    return blocks
+
+
+def _article_text_for_relevance(article: Article) -> str:
+    parts = [article.title or "", article.summary or ""]
+    parts.extend(article.content_paragraphs or [])
+    return "\n".join(p for p in parts if p)
 
 
 def run(
@@ -118,6 +173,7 @@ def run(
     fetch_content: bool = True,
     daily_total_limit: int = 3,
     require_full_content: bool = True,
+    relevance_threshold: float = RELEVANCE_THRESHOLD,
 ):
     start_time = time.time()
     total_phases = 2 + len(topics)  # 连接 + N 个主题 + 处理
@@ -154,6 +210,7 @@ def run(
             fetch_content=fetch_content,
             require_full_content=require_full_content,
             daily_total_limit=daily_total_limit,
+            relevance_threshold=relevance_threshold,
             existing_urls=existing_urls,
             start_time=start_time,
             total_phases=total_phases,
@@ -176,6 +233,7 @@ def _do_run(
     fetch_content,
     require_full_content,
     daily_total_limit,
+    relevance_threshold,
     existing_urls,
     start_time,
     total_phases,
@@ -186,8 +244,12 @@ def _do_run(
         "bitable_ok": 0,
         "doc_ok": 0,
         "skipped": 0,
+        "low_relevance": 0,
+        "geo_ok": 0,
+        "geo_fail": 0,
         "errors": [],
     }
+    notify_items: list[GeoNotifyItem] = []
     topic_stats = {}
 
     candidate_articles: list[tuple[str, Article]] = []
@@ -263,7 +325,13 @@ def _do_run(
             title_short = article.title[:55]
             p("ARTICLE", f"({idx}/{total_articles}) [{label}] {title_short}")
 
-            step_status = {"抓取": "⏳", "飞书文档": "⏳", "多维表格": "⏳"}
+            step_status = {
+                "抓取": "⏳",
+                "关联度": "⏳",
+                "飞书文档": "⏳",
+                "多维表格": "⏳",
+                "GEO": "⏳",
+            }
             hard_fail = False
 
             try:
@@ -286,16 +354,43 @@ def _do_run(
                 stats["scraped"] += 1
                 if require_full_content:
                     hard_fail = True
+                    step_status["关联度"] = "-"
                     step_status["飞书文档"] = "-"
                     step_status["多维表格"] = "-"
+                    step_status["GEO"] = "-"
                     p("FAIL", "  必须全文模式：该文章不入库")
 
             if hard_fail:
                 p(
                     "FAIL",
-                    f"  抓取={step_status['抓取']}  文档={step_status['飞书文档']}  表格={step_status['多维表格']}",
+                    f"  抓取={step_status['抓取']}  关联度={step_status['关联度']}  文档={step_status['飞书文档']}  表格={step_status['多维表格']}  GEO={step_status['GEO']}",
                 )
                 continue
+
+            # ── 关联度闸门：低于阈值则不入库 ──
+            article_text = _article_text_for_relevance(article)
+            hit_kws = matched_keywords(article_text, PRODUCT_KEYWORDS)
+            relevance = compute_relevance(article_text)
+            rel_pct = f"{relevance:.2f}"
+            if relevance < relevance_threshold:
+                step_status["关联度"] = f"⏭️ {rel_pct}<{relevance_threshold:.2f}"
+                step_status["飞书文档"] = "-"
+                step_status["多维表格"] = "-"
+                step_status["GEO"] = "-"
+                stats["low_relevance"] += 1
+                stats["skipped"] += 1
+                topic_stats[topic]["skipped"] += 1
+                p(
+                    "SKIP",
+                    f"  关联度 {rel_pct} 低于阈值 {relevance_threshold:.2f}；命中关键词: "
+                    f"{'、'.join(hit_kws) if hit_kws else '无'}",
+                )
+                p(
+                    "SKIP",
+                    f"  抓取={step_status['抓取']}  关联度={step_status['关联度']}  文档={step_status['飞书文档']}  表格={step_status['多维表格']}  GEO={step_status['GEO']}",
+                )
+                continue
+            step_status["关联度"] = f"✅ {rel_pct}（{len(hit_kws)} 个关键词）"
 
             doc_url = ""
             try:
@@ -309,9 +404,15 @@ def _do_run(
                 step_status["飞书文档"] = f"❌ {e}"
                 stats["errors"].append(f"[{title_short}] 飞书文档: {e}")
 
+            record_id = ""
             try:
-                fields = build_bitable_fields(article, doc_url)
-                feishu.add_bitable_record(fields)
+                fields = build_bitable_fields(
+                    article,
+                    doc_url,
+                    relevance=relevance,
+                    hit_keywords=hit_kws,
+                )
+                record_id = feishu.add_bitable_record(fields)
                 step_status["多维表格"] = "✅"
                 stats["bitable_ok"] += 1
                 existing_urls.add(article.url)
@@ -321,6 +422,57 @@ def _do_run(
                 stats["errors"].append(f"[{title_short}] 多维表格: {e}")
                 run_state.record_failure(article.url)
 
+            # ── 生成 GEO 文章（依赖 bitable 行写入成功） ──
+            if not record_id:
+                step_status["GEO"] = "- 依赖多维表格"
+            elif not OPENAI_API_KEY:
+                step_status["GEO"] = "⏭️ 未配置 OPENAI_API_KEY"
+            else:
+                try:
+                    p("PROGRESS", f"  调用 OpenAI 生成 GEO 文章（model={OPENAI_MODEL}）...")
+                    geo = generate_geo_article(
+                        source_title=article.title,
+                        source_summary=article.summary,
+                        source_paragraphs=article.content_paragraphs,
+                        source_url=article.url,
+                        source_topic_label=label,
+                        matched_kws=hit_kws,
+                    )
+                    geo_folder = FEISHU_GEO_FOLDER_TOKEN or None
+                    geo_doc_id, geo_doc_url = feishu.create_document(
+                        geo.title,
+                        folder_token=geo_folder,
+                    )
+                    geo_blocks = build_geo_doc_blocks(geo.title, geo.paragraphs, article)
+                    if geo_blocks:
+                        feishu.write_document_content(geo_doc_id, geo_blocks)
+                    feishu.update_bitable_record(
+                        record_id,
+                        {
+                            "GEO文档链接": {"text": geo.title, "link": geo_doc_url},
+                            "审批发布状态": "待审批",
+                        },
+                    )
+                    step_status["GEO"] = "✅ 待审批"
+                    stats["geo_ok"] += 1
+                    notify_items.append(
+                        GeoNotifyItem(
+                            source_title=article.title,
+                            topic_label=label,
+                            geo_title=geo.title,
+                            geo_doc_url=geo_doc_url,
+                            source_url=article.url,
+                        )
+                    )
+                except GeoWriterError as e:
+                    step_status["GEO"] = f"❌ 生成: {e}"
+                    stats["geo_fail"] += 1
+                    stats["errors"].append(f"[{title_short}] GEO 生成: {e}")
+                except Exception as e:
+                    step_status["GEO"] = f"❌ {e}"
+                    stats["geo_fail"] += 1
+                    stats["errors"].append(f"[{title_short}] GEO 处理: {e}")
+
             if "❌" in step_status["飞书文档"] or "❌" in step_status["多维表格"]:
                 topic_stats[topic]["fail"] += 1
             else:
@@ -328,8 +480,19 @@ def _do_run(
 
             p(
                 "OK" if "❌" not in str(step_status) else "FAIL",
-                f"  抓取={step_status['抓取']}  文档={step_status['飞书文档']}  表格={step_status['多维表格']}",
+                f"  抓取={step_status['抓取']}  关联度={step_status['关联度']}  "
+                f"文档={step_status['飞书文档']}  表格={step_status['多维表格']}  GEO={step_status['GEO']}",
             )
+
+        # ── 收尾：发送飞书通知 ──
+        if notify_items:
+            p("PROGRESS", f"向飞书 GEO 机器人推送通知（{len(notify_items)} 篇）...")
+            try:
+                send_geo_notification(notify_items)
+                p("OK", "飞书通知已发送")
+            except LarkNotifyError as e:
+                p("FAIL", f"飞书通知发送失败: {e}")
+                stats["errors"].append(f"飞书通知: {e}")
 
     elapsed = time.time() - start_time
     elapsed_str = f"{int(elapsed // 60)}分{int(elapsed % 60)}秒" if elapsed >= 60 else f"{elapsed:.1f}秒"
@@ -353,7 +516,13 @@ def _do_run(
     p("REPORT", "-" * 50)
     p(
         "REPORT",
-        f"  全局上限: {daily_total_limit} | 抓取 {stats['scraped']} | 跳过 {stats['skipped']} | 文档 {stats['doc_ok']} | 表格 {stats['bitable_ok']}",
+        f"  全局上限: {daily_total_limit} | 抓取 {stats['scraped']} | 跳过 {stats['skipped']}"
+        f"（含低关联度 {stats['low_relevance']}）| 文档 {stats['doc_ok']} | 表格 {stats['bitable_ok']}",
+    )
+    p(
+        "REPORT",
+        f"  关联度阈值: {relevance_threshold:.2f} | GEO 生成成功 {stats['geo_ok']} | "
+        f"GEO 失败 {stats['geo_fail']} | 通知条目 {len(notify_items)}",
     )
 
     if stats["errors"]:
@@ -403,6 +572,12 @@ def main():
         action="store_false",
         help="抓不到全文时允许摘要兜底入库",
     )
+    parser.add_argument(
+        "--relevance-threshold",
+        type=float,
+        default=RELEVANCE_THRESHOLD,
+        help=f"产品关联度阈值（0-1，默认读取 RELEVANCE_THRESHOLD 环境变量或 {RELEVANCE_THRESHOLD}）",
+    )
 
     args = parser.parse_args()
 
@@ -414,6 +589,7 @@ def main():
         fetch_content=not args.no_content,
         daily_total_limit=args.daily_total_limit,
         require_full_content=args.require_full_content,
+        relevance_threshold=args.relevance_threshold,
     )
 
 

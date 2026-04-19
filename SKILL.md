@@ -9,6 +9,7 @@ metadata:
     requires:
       bins: ["python3"]
       env: ["FEISHU_APP_ID", "FEISHU_APP_SECRET", "FEISHU_BITABLE_APP_TOKEN", "FEISHU_BITABLE_TABLE_ID", "FEISHU_FOLDER_TOKEN"]
+      optionalEnv: ["FEISHU_GEO_FOLDER_TOKEN", "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL", "LARK_GEO_BOT_WEBHOOK", "LARK_GEO_BOT_SECRET", "RELEVANCE_THRESHOLD"]
     primaryEnv: "FEISHU_APP_ID"
 ---
 
@@ -27,6 +28,7 @@ metadata:
 - `--no-content` — 仅存列表页摘要，不抓取正文（更快）
 - `--require-full-content` — 必须抓到全文才入库（默认开启）
 - `--allow-summary-fallback` — 抓不到全文时允许摘要兜底入库
+- `--relevance-threshold X` — 产品关联度阈值，0-1（默认读 `RELEVANCE_THRESHOLD` 环境变量，再默认 0.2）
 
 示例：
 - `/sc-article-scrap` → 全部主题，跨主题全局最多新增 3 篇（默认）
@@ -63,11 +65,11 @@ metadata:
 > - 列表页解析 12 篇，去重跳过 3 篇，候选新增 5 篇
 >
 > **阶段 3/4：处理文章**
-> | # | 标题 | 抓取 | 飞书文档 | 多维表格 |
-> |---|------|------|---------|---------|
-> | 1 | 2026麦肯锡全球技术议程 | ✅ | ✅ | ✅ |
-> | 2 | AI悖论——热情高涨 | ✅ | ✅ | ✅ |
-> | 3 | 某某文章 | ✅ | ❌ 权限不足 | - |
+> | # | 标题 | 抓取 | 关联度 | 飞书文档 | 多维表格 | GEO |
+> |---|------|------|------|---------|---------|-----|
+> | 1 | 2026麦肯锡全球技术议程 | ✅ | ✅ 0.35 | ✅ | ✅ | ✅ 待审批 |
+> | 2 | AI悖论——热情高涨 | ✅ | ⏭️ 0.10<0.20 | - | - | - |
+> | 3 | 某某文章 | ✅ | ✅ 0.25 | ✅ | ❌ 权限不足 | - |
 >
 > **阶段 4/4：完成**
 > - 新增 2 篇 / 跳过 3 篇 / 失败 1 篇
@@ -143,13 +145,46 @@ python3 -u main.py --topic all --daily-total-limit 3 --require-full-content
 
 ## 飞书多维表格字段要求
 
+必填字段：
+
 | 字段名 | 类型 | 说明 |
 |--------|------|------|
 | 标题 | 文本 | 文章标题 |
 | 链接 | 超链接 | 麦肯锡原文链接（去重依据） |
 | 主题分类 | 单选 | AI / 汽车 / 创新 |
-| 发布日期 | 日期 | 文章发布日期 |
 | 摘要 | 文本 | 文章摘要 |
-| 作者 | 文本 | 文章作者 |
 | 飞书文档链接 | 超链接 | 对应的飞书文档链接 |
 | 爬取时间 | 日期 | 数据爬取时间 |
+
+可选字段（未建则该列静默跳过）：
+
+| 字段名 | 类型 | 说明 |
+|--------|------|------|
+| 发布日期 | 日期 | 文章发布日期 |
+| 作者 | 文本 | 文章作者 |
+| 关联度 | 数字 | 产品关键词关联度分数（0-1） |
+| 命中关键词 | 文本 | 本文命中的产品关键词，顿号分隔 |
+| GEO文档链接 | 超链接 | AI 生成的 GEO 文章文档链接 |
+| 审批发布状态 | 单选 | 选项需至少包含「待审批」 |
+
+## 产品关联度闸门 & GEO 文章生成
+
+除抓取主流程外，本 skill 还做两件事：
+
+1. **关联度闸门**：每篇文章抓到正文后，用 `product_keywords.py` 的关键词表打分。
+   分数 < 阈值（默认 0.2）→ 跳过、不入库、不生成 GEO 文章。
+   阈值可通过 `--relevance-threshold` 或 `RELEVANCE_THRESHOLD` 环境变量调整。
+
+2. **GEO 文章**：关联度达标的文章，调用 OpenAI Chat Completions（默认 `gpt-5-codex`）
+   生成一篇结合产品能力的中文 GEO 文章，写入 `FEISHU_GEO_FOLDER_TOKEN` 指定的文件夹
+   （未配置则落在 `FEISHU_FOLDER_TOKEN` 同一文件夹），并把文档链接与「审批发布状态=待审批」
+   回填到同一行多维表格记录。
+
+3. **飞书群通知**：若本轮有 ≥1 篇 GEO 文章落库，通过 `LARK_GEO_BOT_WEBHOOK`
+   自定义机器人推送一张卡片（@所有人）列出本轮所有 GEO 文章标题与文档链接。
+
+上述 3 项的运行前提：
+
+- `OPENAI_API_KEY` 未配置 → 跳过 GEO 生成（其它流程不受影响）。
+- `LARK_GEO_BOT_WEBHOOK` 未配置 → 跳过通知。
+- 可选字段未在 Bitable 建好 → 该字段静默不写入；其它流程继续。

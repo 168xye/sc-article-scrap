@@ -15,6 +15,16 @@ from config import (
 )
 
 
+_OPTIONAL_FIELD_CANONICALS = {
+    "发布日期",
+    "作者",
+    "GEO文档链接",
+    "审批发布状态",
+    "关联度",
+    "命中关键词",
+}
+
+
 class FeishuClient:
     def __init__(self):
         self._token: str = ""
@@ -143,10 +153,27 @@ class FeishuClient:
             "作者": ["作者", "authors", "author"],
             "飞书文档链接": ["飞书文档链接", "文档链接", "飞书文档", "doc", "doc url"],
             "爬取时间": ["爬取时间", "抓取时间", "创建时间", "scraped at"],
+            "GEO文档链接": [
+                "GEO文档链接", "GEO 文档链接", "geo文档链接",
+                "GEO文档", "GEO 文档", "geo doc", "geo doc url",
+            ],
+            "审批发布状态": [
+                "审批发布状态", "审批状态", "发布状态",
+                "approval status", "publish status",
+            ],
+            "关联度": [
+                "关联度", "关联度分数", "产品关联度",
+                "relevance", "relevance score",
+            ],
+            "命中关键词": [
+                "命中关键词", "关键词命中", "产品关键词",
+                "matched keywords", "keywords",
+            ],
         }
 
         resolved = {}
-        missing = []
+        missing_required = []
+        missing_optional = []
         for canonical, candidates in aliases.items():
             match = None
             for candidate in candidates:
@@ -160,23 +187,44 @@ class FeishuClient:
             if match:
                 resolved[canonical] = match
             else:
-                missing.append(canonical)
+                if canonical in _OPTIONAL_FIELD_CANONICALS:
+                    missing_optional.append(canonical)
+                else:
+                    missing_required.append(canonical)
 
         self._field_name_map = resolved
-        if missing:
+        self._missing_optional_fields = missing_optional
+        if missing_required:
             raise RuntimeError(
-                f"多维表格缺少字段: {', '.join(missing)}，当前字段有: {', '.join(sorted(actual_names))}"
+                f"多维表格缺少字段: {', '.join(missing_required)}，当前字段有: {', '.join(sorted(actual_names))}"
             )
         return resolved
+
+    def get_missing_optional_fields(self) -> list[str]:
+        """返回当前 bitable 中缺失的可选字段列表（需先调用过 _resolve_field_name_map）。"""
+        self._resolve_field_name_map()
+        return list(getattr(self, "_missing_optional_fields", []))
+
+    def _map_fields(self, fields: dict) -> dict:
+        """按 canonical→实际字段名映射，自动剔除表中不存在的可选字段。"""
+        field_name_map = self._resolve_field_name_map()
+        mapped: dict = {}
+        for key, value in fields.items():
+            actual = field_name_map.get(key)
+            if actual is None:
+                if key in _OPTIONAL_FIELD_CANONICALS:
+                    # 表中未建该列，静默跳过
+                    continue
+                # 未知字段名按原样传
+                actual = key
+            mapped[actual] = value
+        return mapped
 
     def add_bitable_record(self, fields: dict) -> str:
         """
         向多维表格添加一条记录，返回 record_id。
         """
-        field_name_map = self._resolve_field_name_map()
-        mapped_fields = {
-            field_name_map.get(key, key): value for key, value in fields.items()
-        }
+        mapped_fields = self._map_fields(fields)
 
         url = (
             f"{FEISHU_BASE_URL}/bitable/v1/apps/"
@@ -190,6 +238,26 @@ class FeishuClient:
         if data.get("code") != 0:
             raise RuntimeError(f"写入多维表格失败: {data}")
         return data["data"]["record"]["record_id"]
+
+    def update_bitable_record(self, record_id: str, fields: dict) -> None:
+        """PATCH 更新一条多维表格记录的部分字段。"""
+        if not record_id:
+            raise ValueError("record_id 不能为空")
+        mapped_fields = self._map_fields(fields)
+        if not mapped_fields:
+            return  # 所有字段都被判定为可选缺失，无需请求
+
+        url = (
+            f"{FEISHU_BASE_URL}/bitable/v1/apps/"
+            f"{FEISHU_BITABLE_APP_TOKEN}/tables/{FEISHU_BITABLE_TABLE_ID}/records/{record_id}"
+        )
+        resp = requests.put(
+            url, headers=self._headers(), json={"fields": mapped_fields}, timeout=10
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("code") != 0:
+            raise RuntimeError(f"更新多维表格失败: {data}")
 
     def batch_add_bitable_records(self, records: list[dict]) -> list[str]:
         """批量添加记录（最多 500 条），返回 record_id 列表"""
@@ -210,15 +278,21 @@ class FeishuClient:
 
     # ── 飞书文档：创建 & 写入 ─────────────────────────────
 
-    def create_document(self, title: str) -> tuple[str, str]:
+    def create_document(
+        self,
+        title: str,
+        folder_token: Optional[str] = None,
+    ) -> tuple[str, str]:
         """
         在指定文件夹下创建飞书文档。
+        folder_token 为空则使用默认的 FEISHU_FOLDER_TOKEN。
         返回 (document_id, document_url)。
         """
         url = f"{FEISHU_BASE_URL}/docx/v1/documents"
         body = {"title": title}
-        if FEISHU_FOLDER_TOKEN:
-            body["folder_token"] = FEISHU_FOLDER_TOKEN
+        target_folder = folder_token if folder_token is not None else FEISHU_FOLDER_TOKEN
+        if target_folder:
+            body["folder_token"] = target_folder
         resp = requests.post(
             url, headers=self._headers(), json=body, timeout=10
         )

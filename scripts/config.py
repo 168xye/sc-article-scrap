@@ -11,8 +11,36 @@ FEISHU_APP_SECRET = os.getenv("FEISHU_APP_SECRET", "")
 FEISHU_BITABLE_APP_TOKEN = os.getenv("FEISHU_BITABLE_APP_TOKEN", "")
 FEISHU_BITABLE_TABLE_ID = os.getenv("FEISHU_BITABLE_TABLE_ID", "")
 FEISHU_FOLDER_TOKEN = os.getenv("FEISHU_FOLDER_TOKEN", "")
+# 生成的 GEO 文章存放文件夹；留空则与 FEISHU_FOLDER_TOKEN 共用。
+FEISHU_GEO_FOLDER_TOKEN = os.getenv("FEISHU_GEO_FOLDER_TOKEN", "")
 
 FEISHU_BASE_URL = "https://open.feishu.cn/open-apis"
+
+# ── 飞书 GEO 机器人（自定义机器人 Webhook） ─────────────
+LARK_GEO_BOT_WEBHOOK = os.getenv("LARK_GEO_BOT_WEBHOOK", "")
+# 启用「加签」验证时填；未启用留空即可。
+LARK_GEO_BOT_SECRET = os.getenv("LARK_GEO_BOT_SECRET", "")
+
+# ── 关联度阈值 ────────────────────────────────────────────
+# 文章与产品关键词的关联度分数（0-1）。低于此值则不入库、不生成 GEO 文章。
+try:
+    RELEVANCE_THRESHOLD = float(os.getenv("RELEVANCE_THRESHOLD", "0.2"))
+except ValueError:
+    RELEVANCE_THRESHOLD = 0.2
+
+# ── OpenAI（GEO 生成） ───────────────────────────────────
+# 走 Chat Completions 协议；可通过 OPENAI_BASE_URL 切到 OpenAI 协议中转。
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5-codex")
+try:
+    OPENAI_MAX_TOKENS = int(os.getenv("OPENAI_MAX_TOKENS", "4096"))
+except ValueError:
+    OPENAI_MAX_TOKENS = 4096
+try:
+    OPENAI_TIMEOUT = int(os.getenv("OPENAI_TIMEOUT", "120"))
+except ValueError:
+    OPENAI_TIMEOUT = 120
 
 # ── 代理 ──────────────────────────────────────────────────
 # 访问麦肯锡的请求走此代理；飞书 API 直连。留空则不使用代理。
