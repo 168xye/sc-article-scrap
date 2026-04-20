@@ -15,6 +15,7 @@ from typing import Optional
 
 from config import (
     FEISHU_GEO_FOLDER_TOKEN,
+    MAX_FETCH_PER_RUN,
     RELEVANCE_THRESHOLD,
     TOPIC_CATEGORY_PATHS,
     TOPIC_LABELS,
@@ -295,56 +296,53 @@ def _do_run(
             if len(new_articles) >= limit:
                 break
 
-        # 早期关联度闸门：基于列表页 title + 卡片摘要过滤，
-        # 避免对低相关文章做昂贵的全文 fetch。
-        relevant_articles = []
-        for a in new_articles:
-            list_text = "\n".join(t for t in (a.title, a.summary) if t)
-            rel = compute_relevance(list_text)
-            if rel < relevance_threshold:
-                hits = matched_keywords(list_text, PRODUCT_KEYWORDS)
-                topic_stats[topic]["skipped"] += 1
-                stats["skipped"] += 1
-                stats["low_relevance"] += 1
-                hint = "、".join(hits) if hits else "无"
-                p(
-                    "SKIP",
-                    f"{a.title[:60]} 关联度 {rel:.2f}<{relevance_threshold:.2f}（命中：{hint}）",
-                )
-                continue
-            relevant_articles.append(a)
-
-        topic_stats[topic]["new"] = len(relevant_articles)
+        topic_stats[topic]["new"] = len(new_articles)
         p(
             "PROGRESS",
             f"主题 [{label}] 结果: 搜索 {len(articles)} 篇 → "
             f"跳过 {topic_stats[topic]['skipped']} 篇 → "
-            f"候选新增 {len(relevant_articles)} 篇",
+            f"候选新增 {len(new_articles)} 篇（待 fetch+关联度判定）",
         )
 
-        for a in relevant_articles:
+        for a in new_articles:
             a.topic = topic
             candidate_articles.append((topic, a))
 
+    # 按 MAX_FETCH_PER_RUN 截断候选：这是 fetch 次数的硬上限，
+    # 即便 daily_total_limit 未凑齐也不再多抓，防止 fetch 成本失控。
     selected_articles, dropped_count = _select_global_daily_articles(
         candidate_articles,
-        daily_total_limit,
+        MAX_FETCH_PER_RUN,
     )
     if dropped_count:
         p(
             "PROGRESS",
-            f"全局限额生效: 候选 {len(candidate_articles)} 篇，保留最新 {len(selected_articles)} 篇，舍弃 {dropped_count} 篇",
+            f"候选 {len(candidate_articles)} 篇超过 fetch 上限 MAX_FETCH_PER_RUN={MAX_FETCH_PER_RUN}，"
+            f"按日期倒序保留前 {len(selected_articles)} 篇，舍弃 {dropped_count} 篇",
         )
 
     current_phase += 1
     total_articles = len(selected_articles)
+    qualified_count = 0  # 通过关联度闸门的篇数，命中 daily_total_limit 即停
 
     if total_articles == 0:
         p("PHASE", f"({current_phase}/{total_phases}) 无新文章需要处理")
     else:
-        p("PHASE", f"({current_phase}/{total_phases}) 开始处理 {total_articles} 篇新文章...")
+        p(
+            "PHASE",
+            f"({current_phase}/{total_phases}) 开始处理候选 {total_articles} 篇，"
+            f"目标合格 {daily_total_limit} 篇（fetch 上限 {MAX_FETCH_PER_RUN}）",
+        )
 
         for idx, (topic, article) in enumerate(selected_articles, 1):
+            if qualified_count >= daily_total_limit:
+                p(
+                    "PROGRESS",
+                    f"已达合格上限 daily_total_limit={daily_total_limit}，"
+                    f"剩余 {total_articles - idx + 1} 篇候选不再处理",
+                )
+                break
+
             label = TOPIC_LABELS.get(topic, topic)
             title_short = article.title[:55]
             p("ARTICLE", f"({idx}/{total_articles}) [{label}] {title_short}")
@@ -391,11 +389,31 @@ def _do_run(
                 )
                 continue
 
-            # 关联度闸门已在列表阶段完成；这里基于全文重算一次用于入库字段。
+            # ── 关联度闸门：基于全文；不合格不计入 qualified_count ──
             article_text = _article_text_for_relevance(article)
             hit_kws = matched_keywords(article_text, PRODUCT_KEYWORDS)
             relevance = compute_relevance(article_text)
-            step_status["关联度"] = f"✅ {relevance:.2f}（{len(hit_kws)} 个关键词）"
+            rel_pct = f"{relevance:.2f}"
+            if relevance < relevance_threshold:
+                step_status["关联度"] = f"⏭️ {rel_pct}<{relevance_threshold:.2f}"
+                step_status["飞书文档"] = "-"
+                step_status["多维表格"] = "-"
+                step_status["GEO"] = "-"
+                stats["low_relevance"] += 1
+                stats["skipped"] += 1
+                topic_stats[topic]["skipped"] += 1
+                p(
+                    "SKIP",
+                    f"  关联度 {rel_pct} 低于阈值 {relevance_threshold:.2f}；命中关键词: "
+                    f"{'、'.join(hit_kws) if hit_kws else '无'}（不计入合格数）",
+                )
+                p(
+                    "SKIP",
+                    f"  抓取={step_status['抓取']}  关联度={step_status['关联度']}  文档={step_status['飞书文档']}  表格={step_status['多维表格']}  GEO={step_status['GEO']}",
+                )
+                continue
+            step_status["关联度"] = f"✅ {rel_pct}（{len(hit_kws)} 个关键词）"
+            qualified_count += 1
 
             doc_url = ""
             try:

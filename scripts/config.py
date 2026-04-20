@@ -91,6 +91,13 @@ TOPIC_LABELS = {
 # ── 爬取参数 ───────────────────────────────────────────────
 DEFAULT_LIMIT_PER_TOPIC = 5
 
+# 单次运行 fetch 全文的硬上限（含被关联度判掉的文章）。
+# 即便 daily_total_limit 还没凑齐合格篇数，也不会 fetch 超过这个值。
+try:
+    MAX_FETCH_PER_RUN = int(os.getenv("MAX_FETCH_PER_RUN", "20"))
+except ValueError:
+    MAX_FETCH_PER_RUN = 20
+
 # 两篇文章之间的节拍（秒）。低频运行场景建议 30-90，避免触发限流。
 REQUEST_DELAY_SECONDS = 60
 
