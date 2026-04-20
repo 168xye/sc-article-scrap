@@ -15,8 +15,6 @@ from typing import Optional
 
 from config import (
     FEISHU_GEO_FOLDER_TOKEN,
-    OPENAI_API_KEY,
-    OPENAI_MODEL,
     RELEVANCE_THRESHOLD,
     TOPIC_CATEGORY_PATHS,
     TOPIC_LABELS,
@@ -24,7 +22,7 @@ from config import (
     validate_config,
 )
 from feishu_client import FeishuClient
-from geo_writer import GeoWriterError, generate_geo_article
+from geo_writer import GeoWriterError, generate_geo_article, resolve_llm_config
 from lark_notifier import GeoNotifyItem, LarkNotifyError, send_geo_notification
 from product_keywords import (
     PRODUCT_KEYWORDS,
@@ -423,13 +421,14 @@ def _do_run(
                 run_state.record_failure(article.url)
 
             # ── 生成 GEO 文章（依赖 bitable 行写入成功） ──
+            llm_cfg = resolve_llm_config()
             if not record_id:
                 step_status["GEO"] = "- 依赖多维表格"
-            elif not OPENAI_API_KEY:
-                step_status["GEO"] = "⏭️ 未配置 OPENAI_API_KEY"
+            elif not llm_cfg.api_key:
+                step_status["GEO"] = f"⏭️ 未配置 {llm_cfg.provider.upper()}_API_KEY"
             else:
                 try:
-                    p("PROGRESS", f"  调用 OpenAI 生成 GEO 文章（model={OPENAI_MODEL}）...")
+                    p("PROGRESS", f"  调用 {llm_cfg.provider} 生成 GEO 文章（model={llm_cfg.model}）...")
                     geo = generate_geo_article(
                         source_title=article.title,
                         source_summary=article.summary,

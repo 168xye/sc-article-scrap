@@ -1,10 +1,11 @@
-"""GEO 文章生成：调用 OpenAI Chat Completions 接口。
+"""GEO 文章生成：调用 OpenAI Chat Completions 协议接口。
 
 输入：一篇已抓取的麦肯锡文章 + 产品关键词命中结果。
 输出：围绕产品关键词重写的 GEO 文章（标题 + 段落列表）。
 
 接口：OpenAI 协议 Chat Completions（/v1/chat/completions），
-兼容 OpenAI 官方以及任何 OpenAI 协议中转。model 与 base_url 可通过环境变量切换。
+兼容 OpenAI 官方、任何 OpenAI 协议中转，以及阿里通义千问（DashScope 兼容模式）。
+具体走哪家由 LLM_PROVIDER 决定，凭据 / base_url / model 从对应一组环境变量读取。
 """
 
 from __future__ import annotations
@@ -16,11 +17,17 @@ from typing import Optional
 import requests
 
 from config import (
+    LLM_PROVIDER,
     OPENAI_API_KEY,
     OPENAI_BASE_URL,
     OPENAI_MAX_TOKENS,
     OPENAI_MODEL,
     OPENAI_TIMEOUT,
+    QWEN_API_KEY,
+    QWEN_BASE_URL,
+    QWEN_MAX_TOKENS,
+    QWEN_MODEL,
+    QWEN_TIMEOUT,
 )
 from product_keywords import PRODUCT_NAME, PRODUCT_TAGLINE
 
@@ -32,8 +39,39 @@ class GeoArticle:
     model: str = ""
 
 
+@dataclass(frozen=True)
+class LLMConfig:
+    provider: str
+    api_key: str
+    base_url: str
+    model: str
+    max_tokens: int
+    timeout: int
+
+
 class GeoWriterError(RuntimeError):
     pass
+
+
+def resolve_llm_config() -> LLMConfig:
+    """按 LLM_PROVIDER 解析当前要使用的一组 LLM 凭据和参数。"""
+    if LLM_PROVIDER == "qwen":
+        return LLMConfig(
+            provider="qwen",
+            api_key=QWEN_API_KEY,
+            base_url=QWEN_BASE_URL,
+            model=QWEN_MODEL,
+            max_tokens=QWEN_MAX_TOKENS,
+            timeout=QWEN_TIMEOUT,
+        )
+    return LLMConfig(
+        provider="openai",
+        api_key=OPENAI_API_KEY,
+        base_url=OPENAI_BASE_URL,
+        model=OPENAI_MODEL,
+        max_tokens=OPENAI_MAX_TOKENS,
+        timeout=OPENAI_TIMEOUT,
+    )
 
 
 _SYSTEM_PROMPT = f"""你是一位为 B2B SaaS 品牌撰写 GEO（Generative Engine Optimization）文章的资深内容策划。
@@ -97,14 +135,16 @@ def generate_geo_article(
     matched_kws: list[str],
     model: Optional[str] = None,
 ) -> GeoArticle:
-    if not OPENAI_API_KEY:
-        raise GeoWriterError("未配置 OPENAI_API_KEY，无法生成 GEO 文章")
+    cfg = resolve_llm_config()
+    provider_label = cfg.provider.upper()
+    if not cfg.api_key:
+        raise GeoWriterError(f"未配置 {provider_label}_API_KEY，无法生成 GEO 文章")
 
-    use_model = model or OPENAI_MODEL
-    url = f"{OPENAI_BASE_URL.rstrip('/')}/v1/chat/completions"
+    use_model = model or cfg.model
+    url = f"{cfg.base_url.rstrip('/')}/v1/chat/completions"
     payload = {
         "model": use_model,
-        "max_tokens": OPENAI_MAX_TOKENS,
+        "max_tokens": cfg.max_tokens,
         "temperature": 0.7,
         "messages": [
             {"role": "system", "content": _SYSTEM_PROMPT},
@@ -123,40 +163,40 @@ def generate_geo_article(
         "response_format": {"type": "json_object"},
     }
     headers = {
-        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Authorization": f"Bearer {cfg.api_key}",
         "Content-Type": "application/json",
     }
 
     try:
-        resp = requests.post(url, headers=headers, json=payload, timeout=OPENAI_TIMEOUT)
+        resp = requests.post(url, headers=headers, json=payload, timeout=cfg.timeout)
     except requests.RequestException as e:
-        raise GeoWriterError(f"调用 OpenAI API 失败: {e}") from e
+        raise GeoWriterError(f"调用 {provider_label} API 失败: {e}") from e
 
     if resp.status_code >= 400:
-        # 兼容部分中转不支持 response_format 的情况，回退一次去掉该字段
+        # 兼容部分中转 / 模型不支持 response_format 的情况，回退一次去掉该字段
         if resp.status_code in (400, 422) and "response_format" in payload:
             payload.pop("response_format", None)
             try:
-                resp = requests.post(url, headers=headers, json=payload, timeout=OPENAI_TIMEOUT)
+                resp = requests.post(url, headers=headers, json=payload, timeout=cfg.timeout)
             except requests.RequestException as e:
-                raise GeoWriterError(f"调用 OpenAI API（回退）失败: {e}") from e
+                raise GeoWriterError(f"调用 {provider_label} API（回退）失败: {e}") from e
         if resp.status_code >= 400:
             raise GeoWriterError(
-                f"OpenAI API HTTP {resp.status_code}: {resp.text[:500]}"
+                f"{provider_label} API HTTP {resp.status_code}: {resp.text[:500]}"
             )
 
     try:
         data = resp.json()
     except ValueError as e:
-        raise GeoWriterError(f"OpenAI API 返回非 JSON: {resp.text[:500]}") from e
+        raise GeoWriterError(f"{provider_label} API 返回非 JSON: {resp.text[:500]}") from e
 
     choices = data.get("choices") or []
     if not choices:
-        raise GeoWriterError(f"OpenAI 响应无 choices: {str(data)[:500]}")
+        raise GeoWriterError(f"{provider_label} 响应无 choices: {str(data)[:500]}")
     message = choices[0].get("message") or {}
     raw_text = (message.get("content") or "").strip()
     if not raw_text:
-        raise GeoWriterError(f"OpenAI 响应 content 为空: {str(data)[:500]}")
+        raise GeoWriterError(f"{provider_label} 响应 content 为空: {str(data)[:500]}")
 
     parsed = _parse_json_payload(raw_text)
     title = str(parsed.get("title") or "").strip()

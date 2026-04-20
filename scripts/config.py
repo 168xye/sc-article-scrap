@@ -28,6 +28,11 @@ try:
 except ValueError:
     RELEVANCE_THRESHOLD = 0.2
 
+# ── LLM 供应商选择 ───────────────────────────────────────
+# GEO 文章生成走哪家模型：openai | qwen
+# 两家都基于 OpenAI Chat Completions 协议，仅凭据 / base_url / model 不同。
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai").strip().lower()
+
 # ── OpenAI（GEO 生成） ───────────────────────────────────
 # 走 Chat Completions 协议；可通过 OPENAI_BASE_URL 切到 OpenAI 协议中转。
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
@@ -41,6 +46,22 @@ try:
     OPENAI_TIMEOUT = int(os.getenv("OPENAI_TIMEOUT", "120"))
 except ValueError:
     OPENAI_TIMEOUT = 120
+
+# ── 通义千问（DashScope 兼容模式） ───────────────────────
+# DashScope 提供 OpenAI 协议兼容端点，base_url 保持到 /compatible-mode 即可，
+# geo_writer 会拼接 /v1/chat/completions。
+# API KEY 获取：https://dashscope.console.aliyun.com/apiKey
+QWEN_API_KEY = os.getenv("QWEN_API_KEY", "")
+QWEN_BASE_URL = os.getenv("QWEN_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode")
+QWEN_MODEL = os.getenv("QWEN_MODEL", "qwen3-max")
+try:
+    QWEN_MAX_TOKENS = int(os.getenv("QWEN_MAX_TOKENS", "4096"))
+except ValueError:
+    QWEN_MAX_TOKENS = 4096
+try:
+    QWEN_TIMEOUT = int(os.getenv("QWEN_TIMEOUT", "120"))
+except ValueError:
+    QWEN_TIMEOUT = 120
 
 # ── 代理 ──────────────────────────────────────────────────
 # 访问麦肯锡的请求走此代理；飞书 API 直连。留空则不使用代理。
