@@ -10,8 +10,22 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from config import FEISHU_GEO_NOTIFY_RECEIVE_ID, FEISHU_GEO_NOTIFY_RECEIVE_ID_TYPE
+from config import (
+    FEISHU_BITABLE_APP_TOKEN,
+    FEISHU_BITABLE_TABLE_ID,
+    FEISHU_GEO_NOTIFY_RECEIVE_ID,
+    FEISHU_GEO_NOTIFY_RECEIVE_ID_TYPE,
+)
 from feishu_client import FeishuClient
+
+
+def _bitable_url() -> str:
+    if not FEISHU_BITABLE_APP_TOKEN:
+        return ""
+    base = f"https://feishu.cn/base/{FEISHU_BITABLE_APP_TOKEN}"
+    if FEISHU_BITABLE_TABLE_ID:
+        base += f"?table={FEISHU_BITABLE_TABLE_ID}"
+    return base
 
 
 @dataclass
@@ -28,12 +42,13 @@ class LarkNotifyError(RuntimeError):
 
 
 def _build_card(items: list[GeoNotifyItem]) -> dict:
-    header_title = f"新增 {len(items)} 篇 GEO 文章待审批"
+    header_title = f"待审核列表（新增 {len(items)} 篇）"
+    bitable_url = _bitable_url()
+    intro = "<at id=all></at> 以下 GEO 文章已生成并入库，审批状态为 **待审批**，请相关同学查阅。"
+    if bitable_url:
+        intro += f"\n📋 多维表格：[待审核清单]({bitable_url})"
     elements: list[dict] = [
-        {
-            "tag": "markdown",
-            "content": "<at id=all></at> 以下 GEO 文章已生成并入库，审批状态为 **待审批**，请相关同学查阅。",
-        },
+        {"tag": "markdown", "content": intro},
         {"tag": "hr"},
     ]
 
@@ -58,7 +73,11 @@ def _build_card(items: list[GeoNotifyItem]) -> dict:
 
 
 def _build_text_fallback(items: list[GeoNotifyItem]) -> dict:
-    lines = [f'<at user_id="all">所有人</at> 新增 {len(items)} 篇 GEO 文章待审批：', ""]
+    lines = [f'<at user_id="all">所有人</at> 待审核列表（新增 {len(items)} 篇）：']
+    bitable_url = _bitable_url()
+    if bitable_url:
+        lines.append(f"多维表格: {bitable_url}")
+    lines.append("")
     for idx, it in enumerate(items, 1):
         lines.append(f"{idx}. {it.geo_title}")
         lines.append(f"   文档: {it.geo_doc_url}")

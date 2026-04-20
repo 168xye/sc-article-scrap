@@ -299,7 +299,28 @@ class McKinseyScraper:
             return None
 
         date = _extract_date(card.get_text(" ", strip=True))
-        return Article(title=title, url=url, date=date)
+
+        # 列表卡片摘要：用于 fetch 前的早期关联度判断。
+        # 优先识别 WordPress 常见的 excerpt/summary 容器，兜底取首个较长 <p>。
+        summary = ""
+        for sel in (
+            ".entry-summary", ".post-summary", ".excerpt",
+            ".post-excerpt", ".description", ".card-description",
+        ):
+            el = card.select_one(sel)
+            if el:
+                text = el.get_text(" ", strip=True)
+                if len(text) >= 20:
+                    summary = text
+                    break
+        if not summary:
+            for p_tag in card.find_all("p"):
+                text = p_tag.get_text(" ", strip=True)
+                if len(text) >= 40 and not re.fullmatch(r"[\d./\-\s]+", text):
+                    summary = text
+                    break
+
+        return Article(title=title, url=url, date=date, summary=summary)
 
     @staticmethod
     def _is_article_url(url: str, host: str) -> bool:

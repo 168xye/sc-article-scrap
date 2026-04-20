@@ -295,15 +295,34 @@ def _do_run(
             if len(new_articles) >= limit:
                 break
 
-        topic_stats[topic]["new"] = len(new_articles)
+        # 早期关联度闸门：基于列表页 title + 卡片摘要过滤，
+        # 避免对低相关文章做昂贵的全文 fetch。
+        relevant_articles = []
+        for a in new_articles:
+            list_text = "\n".join(t for t in (a.title, a.summary) if t)
+            rel = compute_relevance(list_text)
+            if rel < relevance_threshold:
+                hits = matched_keywords(list_text, PRODUCT_KEYWORDS)
+                topic_stats[topic]["skipped"] += 1
+                stats["skipped"] += 1
+                stats["low_relevance"] += 1
+                hint = "、".join(hits) if hits else "无"
+                p(
+                    "SKIP",
+                    f"{a.title[:60]} 关联度 {rel:.2f}<{relevance_threshold:.2f}（命中：{hint}）",
+                )
+                continue
+            relevant_articles.append(a)
+
+        topic_stats[topic]["new"] = len(relevant_articles)
         p(
             "PROGRESS",
             f"主题 [{label}] 结果: 搜索 {len(articles)} 篇 → "
             f"跳过 {topic_stats[topic]['skipped']} 篇 → "
-            f"候选新增 {len(new_articles)} 篇",
+            f"候选新增 {len(relevant_articles)} 篇",
         )
 
-        for a in new_articles:
+        for a in relevant_articles:
             a.topic = topic
             candidate_articles.append((topic, a))
 
@@ -372,30 +391,11 @@ def _do_run(
                 )
                 continue
 
-            # ── 关联度闸门：低于阈值则不入库 ──
+            # 关联度闸门已在列表阶段完成；这里基于全文重算一次用于入库字段。
             article_text = _article_text_for_relevance(article)
             hit_kws = matched_keywords(article_text, PRODUCT_KEYWORDS)
             relevance = compute_relevance(article_text)
-            rel_pct = f"{relevance:.2f}"
-            if relevance < relevance_threshold:
-                step_status["关联度"] = f"⏭️ {rel_pct}<{relevance_threshold:.2f}"
-                step_status["飞书文档"] = "-"
-                step_status["多维表格"] = "-"
-                step_status["GEO"] = "-"
-                stats["low_relevance"] += 1
-                stats["skipped"] += 1
-                topic_stats[topic]["skipped"] += 1
-                p(
-                    "SKIP",
-                    f"  关联度 {rel_pct} 低于阈值 {relevance_threshold:.2f}；命中关键词: "
-                    f"{'、'.join(hit_kws) if hit_kws else '无'}",
-                )
-                p(
-                    "SKIP",
-                    f"  抓取={step_status['抓取']}  关联度={step_status['关联度']}  文档={step_status['飞书文档']}  表格={step_status['多维表格']}  GEO={step_status['GEO']}",
-                )
-                continue
-            step_status["关联度"] = f"✅ {rel_pct}（{len(hit_kws)} 个关键词）"
+            step_status["关联度"] = f"✅ {relevance:.2f}（{len(hit_kws)} 个关键词）"
 
             doc_url = ""
             try:
