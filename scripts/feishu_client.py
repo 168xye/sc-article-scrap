@@ -326,10 +326,17 @@ class FeishuClient:
                 json={"children": batch},
                 timeout=15,
             )
-            resp.raise_for_status()
+            if resp.status_code >= 400:
+                raise RuntimeError(
+                    f"写入文档内容失败: HTTP {resp.status_code} "
+                    f"(batch {i}-{i + len(batch) - 1} / {len(blocks)}), "
+                    f"response={resp.text[:1000]}"
+                )
             data = resp.json()
             if data.get("code") != 0:
-                raise RuntimeError(f"写入文档内容失败: {data}")
+                raise RuntimeError(
+                    f"写入文档内容失败 (batch {i}-{i + len(batch) - 1} / {len(blocks)}): {data}"
+                )
             if i + batch_size < len(blocks):
                 time.sleep(0.5)
 
