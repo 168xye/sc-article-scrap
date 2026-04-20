@@ -487,7 +487,7 @@ def _do_run(
         if notify_items:
             p("PROGRESS", f"向飞书 GEO 机器人推送通知（{len(notify_items)} 篇）...")
             try:
-                send_geo_notification(notify_items)
+                send_geo_notification(feishu, notify_items)
                 p("OK", "飞书通知已发送")
             except LarkNotifyError as e:
                 p("FAIL", f"飞书通知发送失败: {e}")

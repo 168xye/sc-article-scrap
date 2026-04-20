@@ -16,10 +16,14 @@ FEISHU_GEO_FOLDER_TOKEN = os.getenv("FEISHU_GEO_FOLDER_TOKEN", "")
 
 FEISHU_BASE_URL = "https://open.feishu.cn/open-apis"
 
-# ── 飞书 GEO 机器人（自定义机器人 Webhook） ─────────────
-LARK_GEO_BOT_WEBHOOK = os.getenv("LARK_GEO_BOT_WEBHOOK", "")
-# 启用「加签」验证时填；未启用留空即可。
-LARK_GEO_BOT_SECRET = os.getenv("LARK_GEO_BOT_SECRET", "")
+# ── 飞书 GEO 应用机器人通知 ──────────────────────────────
+# 使用顶部 FEISHU_APP_ID / FEISHU_APP_SECRET 申请 tenant_access_token，
+# 调用 /open-apis/im/v1/messages 发送消息（需要应用开通 im:message:send_as_bot scope，
+# 并把机器人加入目标群）。留空则跳过通知。
+FEISHU_GEO_NOTIFY_RECEIVE_ID = os.getenv("FEISHU_GEO_NOTIFY_RECEIVE_ID", "")
+FEISHU_GEO_NOTIFY_RECEIVE_ID_TYPE = os.getenv(
+    "FEISHU_GEO_NOTIFY_RECEIVE_ID_TYPE", "chat_id"
+).strip().lower()
 
 # ── 关联度阈值 ────────────────────────────────────────────
 # 文章与产品关键词的关联度分数（0-1）。低于此值则不入库、不生成 GEO 文章。

@@ -1,5 +1,6 @@
-"""飞书开放平台 API 客户端：认证、多维表格写入、文档创建"""
+"""飞书开放平台 API 客户端：认证、多维表格写入、文档创建、应用机器人消息"""
 
+import json
 import time
 import urllib.parse
 from typing import Optional
@@ -386,3 +387,39 @@ class FeishuClient:
     def make_divider_block() -> dict:
         """构造分割线块"""
         return {"block_type": 22, "children": []}
+
+    # ── 应用机器人：IM 消息发送 ───────────────────────────
+
+    def send_im_message(
+        self,
+        *,
+        receive_id: str,
+        receive_id_type: str,
+        msg_type: str,
+        content: dict,
+    ) -> str:
+        """通过应用机器人发送消息，返回 message_id。
+
+        content 传 dict；API 要求最终 payload 里 content 是 JSON 字符串。
+        """
+        url = (
+            f"{FEISHU_BASE_URL}/im/v1/messages"
+            f"?receive_id_type={urllib.parse.quote(receive_id_type)}"
+        )
+        payload = {
+            "receive_id": receive_id,
+            "msg_type": msg_type,
+            "content": json.dumps(content, ensure_ascii=False),
+        }
+        resp = requests.post(url, headers=self._headers(), json=payload, timeout=10)
+        if resp.status_code >= 400:
+            raise RuntimeError(
+                f"发送飞书消息失败: HTTP {resp.status_code}, response={resp.text[:500]}"
+            )
+        try:
+            data = resp.json()
+        except ValueError as e:
+            raise RuntimeError(f"飞书消息响应非 JSON: {resp.text[:500]}") from e
+        if data.get("code") != 0:
+            raise RuntimeError(f"发送飞书消息失败: {data}")
+        return (data.get("data") or {}).get("message_id", "")
