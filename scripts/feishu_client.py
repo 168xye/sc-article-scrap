@@ -405,7 +405,9 @@ class FeishuClient:
     @staticmethod
     def make_divider_block() -> dict:
         """构造分割线块"""
-        return {"block_type": 22, "children": []}
+        # 飞书 Docx v1 要求 block 必须带上与 block_type 对应的载荷字段，
+        # divider 块必须显式写 "divider": {}，否则报 1770001 invalid param。
+        return {"block_type": 22, "children": [], "divider": {}}
 
     # ── 应用机器人：IM 消息发送 ───────────────────────────
 
