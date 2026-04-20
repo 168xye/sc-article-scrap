@@ -327,10 +327,17 @@ class FeishuClient:
                 timeout=15,
             )
             if resp.status_code >= 400:
+                lines = []
+                for idx, block in enumerate(batch):
+                    snippet = json.dumps(block, ensure_ascii=False)
+                    if len(snippet) > 300:
+                        snippet = snippet[:300] + "…"
+                    lines.append(f"  [{i + idx}] {snippet}")
                 raise RuntimeError(
                     f"写入文档内容失败: HTTP {resp.status_code} "
                     f"(batch {i}-{i + len(batch) - 1} / {len(blocks)}), "
-                    f"response={resp.text[:1000]}"
+                    f"response={resp.text[:500]}\n"
+                    f"blocks payload:\n" + "\n".join(lines)
                 )
             data = resp.json()
             if data.get("code") != 0:
