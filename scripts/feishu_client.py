@@ -358,10 +358,15 @@ class FeishuClient:
     @staticmethod
     def make_text_block(text: str) -> dict:
         """构造普通文本段落块"""
+        # 飞书 text_run.content 不允许包含换行（会报 1770001 invalid param），
+        # 残留的 \r\n / \n / \r 兜底替换为空格；跨行请在调用方拆成多个 block。
+        safe = text.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
         # 飞书单个 text_run 限制 2000 字符，超长需拆分
         elements = []
-        for i in range(0, len(text), 2000):
-            elements.append({"text_run": {"content": text[i : i + 2000]}})
+        for i in range(0, len(safe), 2000):
+            elements.append({"text_run": {"content": safe[i : i + 2000]}})
+        if not elements:
+            elements.append({"text_run": {"content": " "}})
         return {
             "block_type": 2,
             "children": [],

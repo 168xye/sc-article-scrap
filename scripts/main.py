@@ -147,15 +147,22 @@ def build_geo_doc_blocks(geo_title: str, paragraphs: list[str], source: Article)
     blocks.append(FeishuClient.make_divider_block())
 
     for para in paragraphs:
-        text = para.strip()
-        if not text:
-            continue
-        if text.startswith("## "):
-            blocks.append(FeishuClient.make_heading_block(text[3:].strip(), level=4))
-        elif text.startswith("# "):
-            blocks.append(FeishuClient.make_heading_block(text[2:].strip(), level=3))
-        else:
-            blocks.append(FeishuClient.make_text_block(text))
+        # LLM（尤其是 Qwen）有时把多行塞进一个 paragraph 字符串；
+        # 飞书 text_run.content 不允许换行，拆成独立 block。
+        for line in para.split("\n"):
+            text = line.strip()
+            if not text:
+                continue
+            if text.startswith("## "):
+                heading = text[3:].strip()
+                if heading:
+                    blocks.append(FeishuClient.make_heading_block(heading, level=4))
+            elif text.startswith("# "):
+                heading = text[2:].strip()
+                if heading:
+                    blocks.append(FeishuClient.make_heading_block(heading, level=3))
+            else:
+                blocks.append(FeishuClient.make_text_block(text))
     return blocks
 
 
