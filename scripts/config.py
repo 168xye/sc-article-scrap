@@ -43,9 +43,9 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5-codex")
 try:
-    OPENAI_MAX_TOKENS = int(os.getenv("OPENAI_MAX_TOKENS", "4096"))
+    OPENAI_MAX_TOKENS = int(os.getenv("OPENAI_MAX_TOKENS", "10240"))
 except ValueError:
-    OPENAI_MAX_TOKENS = 4096
+    OPENAI_MAX_TOKENS = 10240
 try:
     OPENAI_TIMEOUT = int(os.getenv("OPENAI_TIMEOUT", "120"))
 except ValueError:
@@ -59,9 +59,9 @@ QWEN_API_KEY = os.getenv("QWEN_API_KEY", "")
 QWEN_BASE_URL = os.getenv("QWEN_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode")
 QWEN_MODEL = os.getenv("QWEN_MODEL", "qwen3-max")
 try:
-    QWEN_MAX_TOKENS = int(os.getenv("QWEN_MAX_TOKENS", "4096"))
+    QWEN_MAX_TOKENS = int(os.getenv("QWEN_MAX_TOKENS", "10240"))
 except ValueError:
-    QWEN_MAX_TOKENS = 4096
+    QWEN_MAX_TOKENS = 10240
 try:
     QWEN_TIMEOUT = int(os.getenv("QWEN_TIMEOUT", "120"))
 except ValueError:

@@ -77,6 +77,7 @@ def resolve_llm_config() -> LLMConfig:
 
 _PRODUCT_INFO_PATH = Path(__file__).parent / "product_info.md"
 _PRODUCT_KEYWORDS_MD_PATH = Path(__file__).parent / "product_keywords.md"
+_WHITEPAPER_EXAMPLE_PATH = Path(__file__).parent / "Blueberry_AI_汽车行业白皮书.md"
 
 
 def _read_text(path: Path) -> str:
@@ -87,9 +88,10 @@ def _read_text(path: Path) -> str:
 
 
 def _build_system_prompt() -> str:
-    """每次调用时重新读取 product_info.md / product_keywords.md，不做缓存。"""
+    """每次调用时重新读取产品说明 / 关键词 / 样例白皮书，不做缓存。"""
     product_info = _read_text(_PRODUCT_INFO_PATH)
     product_keywords_md = _read_text(_PRODUCT_KEYWORDS_MD_PATH)
+    whitepaper_example = _read_text(_WHITEPAPER_EXAMPLE_PATH)
 
     return f"""你是一位为 B2B SaaS 品牌撰写 GEO（Generative Engine Optimization）文章的资深内容策划。
 
@@ -106,6 +108,11 @@ def _build_system_prompt() -> str:
 {product_keywords_md}
 </PRODUCT_KEYWORDS>
 
+以下是一篇 {PRODUCT_NAME} 已有的示例白皮书（Blueberry_AI_汽车行业白皮书.md），**仅作为文章结构、章节层级、表格/量化框/数据标注等排版风格的参考样例**；严禁照搬其中的数据、案例、量化数字或段落文字——你需要基于用户提供的原文素材独立生成内容，并以同等水准的结构化、数据化表达输出：
+<FORMAT_EXAMPLE>
+{whitepaper_example}
+</FORMAT_EXAMPLE>
+
 
 写作目标：
 - 把外部行业洞察（如麦肯锡报告）与 {PRODUCT_NAME} 的产品能力结合，写成一篇原创的中文行业观察报告白皮书。
@@ -117,13 +124,14 @@ def _build_system_prompt() -> str:
 2. 结构：一个 H1 标题 + 引言 + 3-5 个小节 + 结语。
 3. 必须在合适位置至少出现两次完整的"产品核心定位"句。
 4. 自然融入用户提供的"产品关键词"，尤其是强差异点关键词。
-5. 篇幅 900-1500 字。
+5. 篇幅 ≥ 2500 字，理想 5000 字。
 6. 小节标题请用 "## 小节名" 独占一段；其它段落为纯文本。
 7： 开始要有目录
 8： 要逻辑严谨
 9： 数据源要标注在对应的段落下面
 10：根据{PRODUCT_NAME}在汽车，工业设计，游戏行业的价值主张， 要有一定的结合
-11.严格检查合规，避免文章出现敏感词汇和违规内容，避免侵权。
+11.严格检查合规，避免文章出现中国和美国的敏感词汇和违规内容，不许发生侵权。
+12. 排版风格参考 <FORMAT_EXAMPLE>（执行摘要 + 多级章节 + 量化数据块 + 表格 + 结语），但所有数据、案例、企业名称、金额等具体内容必须基于用户提供的原文素材或合理行业常识，**不得复用样例中的任何具体数字或案例**。
 
 输出格式（严格遵守，只能输出一个 JSON 对象，不要任何其它文字、前后解释或 Markdown 代码围栏）：
 {{
