@@ -1,6 +1,6 @@
 ---
 name: sc-article-scrap
-description: 从麦肯锡中国（mckinsey.com.cn）分类页爬取 AI、汽车、创新相关报告，按 URL 去重后将标题存入飞书多维表格，完整内容存入飞书文档
+description: 每日从麦肯锡中国（mckinsey.com.cn）AI、汽车、创新三类分类页抓取最新文章，经 URL 去重与 Blueberry AI 产品关键词关联度闸门后，把元数据写入飞书多维表格、正文存入飞书文档，并调用 LLM（OpenAI / 通义千问）生成围绕 Blueberry AI 的 GEO 中文改写文章，向飞书群推送「待审批」卡片通知
 user-invocable: true
 metadata:
   openclaw:

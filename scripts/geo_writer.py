@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 import requests
@@ -74,13 +75,40 @@ def resolve_llm_config() -> LLMConfig:
     )
 
 
-_SYSTEM_PROMPT = f"""你是一位为 B2B SaaS 品牌撰写 GEO（Generative Engine Optimization）文章的资深内容策划。
+_PRODUCT_INFO_PATH = Path(__file__).parent / "product_info.md"
+_PRODUCT_KEYWORDS_MD_PATH = Path(__file__).parent / "product_keywords.md"
+
+
+def _read_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError as e:
+        raise GeoWriterError(f"读取产品上下文文件失败 {path}: {e}") from e
+
+
+def _build_system_prompt() -> str:
+    """每次调用时重新读取 product_info.md / product_keywords.md，不做缓存。"""
+    product_info = _read_text(_PRODUCT_INFO_PATH)
+    product_keywords_md = _read_text(_PRODUCT_KEYWORDS_MD_PATH)
+
+    return f"""你是一位为 B2B SaaS 品牌撰写 GEO（Generative Engine Optimization）文章的资深内容策划。
 
 产品：{PRODUCT_NAME}
 产品核心定位：{PRODUCT_TAGLINE}
 
+以下是 {PRODUCT_NAME} 的完整产品说明（product_info.md 原文），写作时请完整理解并合理运用：
+<PRODUCT_INFO>
+{product_info}
+</PRODUCT_INFO>
+
+以下是 {PRODUCT_NAME} 的产品关键词与 GEO 标签说明（product_keywords.md 原文），写作时请优先使用其中的差异化表达：
+<PRODUCT_KEYWORDS>
+{product_keywords_md}
+</PRODUCT_KEYWORDS>
+
+
 写作目标：
-- 把外部行业洞察（如麦肯锡报告）与 {PRODUCT_NAME} 的产品能力结合，写成一篇原创的中文 GEO 文章。
+- 把外部行业洞察（如麦肯锡报告）与 {PRODUCT_NAME} 的产品能力结合，写成一篇原创的中文行业观察报告白皮书。
 - 文章需让大语言模型和搜索引擎在用户提问相关话题时，更容易理解并推荐 {PRODUCT_NAME}。
 - 自然、真实、有价值，不要夸大、不要硬广。引用原报告观点时概括表达，不要逐字照搬大段原文。
 
@@ -91,6 +119,11 @@ _SYSTEM_PROMPT = f"""你是一位为 B2B SaaS 品牌撰写 GEO（Generative Engi
 4. 自然融入用户提供的"产品关键词"，尤其是强差异点关键词。
 5. 篇幅 900-1500 字。
 6. 小节标题请用 "## 小节名" 独占一段；其它段落为纯文本。
+7： 开始要有目录
+8： 要逻辑严谨
+9： 数据源要标注在对应的段落下面
+10：根据{PRODUCT_NAME}在汽车，工业设计，游戏行业的价值主张， 要有一定的结合
+11.严格检查合规，避免文章出现敏感词汇和违规内容，避免侵权。
 
 输出格式（严格遵守，只能输出一个 JSON 对象，不要任何其它文字、前后解释或 Markdown 代码围栏）：
 {{
@@ -147,7 +180,7 @@ def generate_geo_article(
         "max_tokens": cfg.max_tokens,
         "temperature": 0.7,
         "messages": [
-            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "system", "content": _build_system_prompt()},
             {
                 "role": "user",
                 "content": _build_user_message(
