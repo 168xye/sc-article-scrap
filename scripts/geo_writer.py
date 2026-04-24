@@ -1,7 +1,7 @@
 """GEO 文章生成：调用 OpenAI Chat Completions 协议接口。
 
 输入：一篇已抓取的麦肯锡文章 + 产品关键词命中结果。
-输出：围绕产品关键词重写的 GEO 文章（标题 + 段落列表）。
+输出：围绕产品关键词重写的 白皮书（标题 + 段落列表）。
 
 接口：OpenAI 协议 Chat Completions（/v1/chat/completions），
 兼容 OpenAI 官方、任何 OpenAI 协议中转，以及阿里通义千问（DashScope 兼容模式）。
@@ -160,7 +160,7 @@ def _build_user_message(
     hit_line = "、".join(matched_kws) if matched_kws else "（无直接命中，请从产品定位合理联想）"
 
     return (
-        f"下面是一篇来自麦肯锡中国的行业文章，请你据此撰写一篇围绕 {PRODUCT_NAME} 的 GEO 文章。\n\n"
+        f"下面是一篇来自麦肯锡中国的行业文章，请你据此撰写一篇围绕 {PRODUCT_NAME} 的 白皮书。\n\n"
         f"【原文主题分类】{source_topic_label}\n"
         f"【原文标题】{source_title}\n"
         f"【原文链接】{source_url}\n"
