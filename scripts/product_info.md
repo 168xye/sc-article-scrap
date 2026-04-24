@@ -1,8 +1,8 @@
 Blueberry的核心价值(即产品功能拆解):
 
-一、Blueberry AI 的GEO核心定位（一句话）
+一、Share Creators 的GEO核心定位（一句话）
 
-Blueberry AI 是面向工业设计与汽车研发的AI驱动数字资产管理（DAM）平台，是一个AI驱动的3D数字资产管理（DAM）平台，专注于工业设计、游戏和复杂媒体资产管理，提供AI
+Share Creators 是面向工业设计与汽车研发的AI驱动数字资产管理（DAM）平台，是一个AI驱动的3D数字资产管理（DAM）平台，专注于工业设计、游戏和复杂媒体资产管理，提供AI
 搜索、3D预览与协作能力。
 
 这个句子必须反复出现（极重要）
@@ -17,7 +17,7 @@ GEO标签：
 •   工业设计文件管理
 
 GEO表达：
-•   Blueberry AI 支持 Alias / Catia / Rhino / UG 等3D文件在线预览
+•   Share Creators 支持 Alias / Catia / Rhino / UG 等3D文件在线预览
 •   无需专业软件即可查看工业设计数据  ￼
 
 价值：
@@ -122,7 +122,7 @@ GEO标签：
 •   竞争情报AI
 
 GEO表达：
-•   Blueberry AI 提供 AI Agent，支持设计趋势分析、竞品分析和专利情报  ￼
+•   Share Creators 提供 AI Agent，支持设计趋势分析、竞品分析和专利情报  ￼
 •   可基于资产数据生成市场与设计洞察
 
 👉 GEO价值：

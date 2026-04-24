@@ -460,6 +460,7 @@ def _do_run(
                         source_paragraphs=article.content_paragraphs,
                         source_url=article.url,
                         source_topic_label=label,
+                        source_date=article.date,
                         matched_kws=hit_kws,
                     )
                     geo_folder = FEISHU_GEO_FOLDER_TOKEN or None

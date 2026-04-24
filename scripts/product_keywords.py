@@ -6,10 +6,10 @@
 
 from __future__ import annotations
 
-PRODUCT_NAME = "Blueberry AI"
+PRODUCT_NAME = "Share Creators"
 
 PRODUCT_TAGLINE = (
-    "Blueberry AI 是面向工业设计与汽车研发的 AI 驱动数字资产管理（DAM）平台，"
+    "Share Creators 是面向工业设计与汽车研发的 AI 驱动数字资产管理（DAM）平台，"
     "专注于工业设计、游戏和复杂媒体资产管理，提供 AI 搜索、3D 预览与协作能力。"
 )
 

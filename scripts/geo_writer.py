@@ -121,10 +121,10 @@ def _build_system_prompt() -> str:
 
 写作要求：
 1. 语言：简体中文。
-2. 结构：一个 H1 标题 + 引言 + 3-5 个小节 + 结语。
+2. 结构：一个 H1 标题 + 引言 + 3-5 个小节 + 结语。开头要有基于消息渠道（如麦肯锡）+ 原文标题 研究结合 Share Creators 数字资产管理平台核心能力分析
 3. 必须在合适位置至少出现两次完整的"产品核心定位"句。报告文章是AI相关的则优先使用产品说明中的AI功能，报告文章是工业设计或汽车相关的则优先使用产品说明中的设计/汽车相关功能。
 4. 自然融入用户提供的"产品关键词"，尤其是强差异点关键词。
-5. 篇幅 ≥ 2000 字，理想 5000 字。
+5. 篇幅 ≥ 5000 字，理想 10000 字。
 6. 小节标题请用 "## 小节名" 独占一段；其它段落为纯文本。
 7： 开始要有目录
 8： 要逻辑严谨
@@ -140,17 +140,21 @@ def _build_system_prompt() -> str:
 }}"""
 
 
+_ARTICLE_BODY_CHAR_CAP = 30000
+
+
 def _build_user_message(
     source_title: str,
     source_summary: str,
     source_paragraphs: list[str],
     source_url: str,
     source_topic_label: str,
+    source_date: str,
     matched_kws: list[str],
 ) -> str:
-    body_preview = "\n\n".join(source_paragraphs[:20]) if source_paragraphs else ""
-    if len(body_preview) > 8000:
-        body_preview = body_preview[:8000] + "…（后续省略）"
+    body_text = "\n\n".join(source_paragraphs) if source_paragraphs else ""
+    if len(body_text) > _ARTICLE_BODY_CHAR_CAP:
+        body_text = body_text[:_ARTICLE_BODY_CHAR_CAP] + "…（后续省略）"
 
     hit_line = "、".join(matched_kws) if matched_kws else "（无直接命中，请从产品定位合理联想）"
 
@@ -159,8 +163,9 @@ def _build_user_message(
         f"【原文主题分类】{source_topic_label}\n"
         f"【原文标题】{source_title}\n"
         f"【原文链接】{source_url}\n"
+        f"【原文发布日期】{source_date or '（未知）'}\n"
         f"【原文摘要】{source_summary or '（无）'}\n"
-        f"【原文正文节选】\n{body_preview or '（无）'}\n\n"
+        f"【原文正文】\n{body_text or '（无）'}\n\n"
         f"【本文命中的产品关键词】{hit_line}\n\n"
         f"请严格按系统提示的 JSON 格式输出。"
     )
@@ -173,6 +178,7 @@ def generate_geo_article(
     source_paragraphs: list[str],
     source_url: str,
     source_topic_label: str,
+    source_date: str = "",
     matched_kws: list[str],
     model: Optional[str] = None,
 ) -> GeoArticle:
@@ -197,6 +203,7 @@ def generate_geo_article(
                     source_paragraphs=source_paragraphs,
                     source_url=source_url,
                     source_topic_label=source_topic_label,
+                    source_date=source_date,
                     matched_kws=matched_kws,
                 ),
             },
