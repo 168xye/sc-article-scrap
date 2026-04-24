@@ -172,6 +172,30 @@ def _build_user_message(
     )
 
 
+def _log_prompt(
+    *,
+    provider: str,
+    model: str,
+    system_content: str,
+    user_content: str,
+) -> None:
+    """把发给 LLM 的完整 prompt 打印到 stdout，便于排查。
+
+    使用非 [PROGRESS]/[PHASE] 前缀，避免被 skill 侧的结构化解析器误吞。
+    """
+    print("===== GEO PROMPT START =====", flush=True)
+    print(
+        f"provider={provider} model={model} "
+        f"system_chars={len(system_content)} user_chars={len(user_content)}",
+        flush=True,
+    )
+    print("----- SYSTEM -----", flush=True)
+    print(system_content, flush=True)
+    print("----- USER -----", flush=True)
+    print(user_content, flush=True)
+    print("===== GEO PROMPT END =====", flush=True)
+
+
 def generate_geo_article(
     *,
     source_title: str,
@@ -215,6 +239,13 @@ def generate_geo_article(
         "Authorization": f"Bearer {cfg.api_key}",
         "Content-Type": "application/json",
     }
+
+    _log_prompt(
+        provider=cfg.provider,
+        model=use_model,
+        system_content=payload["messages"][0]["content"],
+        user_content=payload["messages"][1]["content"],
+    )
 
     try:
         resp = requests.post(url, headers=headers, json=payload, timeout=cfg.timeout)
