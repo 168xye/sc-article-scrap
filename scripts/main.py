@@ -137,16 +137,6 @@ def build_geo_doc_blocks(geo_title: str, paragraphs: list[str], source: Article)
     blocks: list[dict] = []
     blocks.append(FeishuClient.make_heading_block(geo_title, level=3))
 
-    meta = [
-        f"来源: 麦肯锡中国",
-        f"原文标题: {source.title}",
-        f"原文链接: {source.url}",
-        f"主题: {TOPIC_LABELS.get(source.topic, source.topic)}",
-    ]
-    for line in meta:
-        blocks.append(FeishuClient.make_text_block(line))
-    blocks.append(FeishuClient.make_divider_block())
-
     for para in paragraphs:
         # LLM（尤其是 Qwen）有时把多行塞进一个 paragraph 字符串；
         # 飞书 text_run.content 不允许换行，拆成独立 block。
@@ -164,6 +154,17 @@ def build_geo_doc_blocks(geo_title: str, paragraphs: list[str], source: Article)
                     blocks.append(FeishuClient.make_heading_block(heading, level=3))
             else:
                 blocks.append(FeishuClient.make_text_block(text))
+
+    blocks.append(FeishuClient.make_divider_block())
+    blocks.append(FeishuClient.make_heading_block("原文引用", level=4))
+    meta = [
+        f"引用来源: 麦肯锡中国",
+        f"原文标题: {source.title}",
+        f"原文链接: {source.url}",
+        f"主题: {TOPIC_LABELS.get(source.topic, source.topic)}",
+    ]
+    for line in meta:
+        blocks.append(FeishuClient.make_text_block(line))
     return blocks
 
 
